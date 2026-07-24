@@ -42,7 +42,9 @@ install: build
 	@mkdir -p $(HOME)/.claude/commands
 	@cp commands/*.md $(HOME)/.claude/commands/
 	@echo "Installed slash commands: /tts, /tts-last, /tts-full, /tts-sentence, /tts-off"
-	@cp plugin.json $(INSTALL_DIR)/
+	@mkdir -p $(INSTALL_DIR)/.claude-plugin
+	@cp .claude-plugin/plugin.json $(INSTALL_DIR)/.claude-plugin/
+	@cp hooks/hooks.json $(INSTALL_DIR)/hooks/
 	@cp .mcp.json $(INSTALL_DIR)/
 	@cp .claude/settings.json $(INSTALL_DIR)/.claude/
 	@cp README.md $(INSTALL_DIR)/

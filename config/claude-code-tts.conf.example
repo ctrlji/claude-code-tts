@@ -39,6 +39,11 @@ TTS_STRIP_MARKDOWN="1"
 # is a voice name from your account or a raw voice ID.
 # TTS_VOICE="Aria"
 
+# Playback speed. 1.0 = normal. Range 0.5 (half) to 2.0 (double); pitch is
+# preserved. Works with the mpv or ffplay player on Linux, and afplay on macOS.
+# Change it on the fly with:  tts-ctl speed 1.25
+# TTS_SPEED="1.0"
+
 # --- Long text ----------------------------------------------------------------
 # Maximum characters per synthesis request when reading long text. Long input is
 # split into chunks this size on sentence boundaries.

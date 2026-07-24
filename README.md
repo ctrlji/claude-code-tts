@@ -174,6 +174,35 @@ By default it speaks only the **first sentence**, as a short spoken summary. You
 
 The hook runs in the background, so it never blocks Claude's responses. It also saves each response to `last-response.md` inside the plugin folder, so you can replay the whole thing on demand (see `speak-last` below).
 
+### Enabling auto-speak
+
+The Stop hook only runs when Claude Code has loaded this project as a **plugin** — a bundle that Claude Code registers and reads a manifest from. Copying the files into `~/.claude/plugins/` is not enough on its own. Claude Code loads plugins from its own registry, not by scanning that folder, so a plain copy gives you the `speak` tool and the `/tts` commands but leaves the hook inactive. If the commands work but auto-speak stays silent, this is why.
+
+There are two supported ways to turn the hook on.
+
+**Option 1 — install it as a real plugin.** Add the plugin through Claude Code's `/plugin` menu, pointing at this repository, then restart Claude Code or run `/reload-plugins`. Claude Code then reads `.claude-plugin/plugin.json` and auto-discovers `hooks/hooks.json`, so the Stop hook loads the way it is meant to.
+
+**Option 2 — register the hook yourself.** Add a `Stop` hook to your own user settings at `~/.claude/settings.json`, pointing at the installed script. Use this if you installed with `make install` or the `curl` one-liner instead of through the plugin menu:
+
+```json
+{
+  "hooks": {
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "$HOME/.claude/plugins/claude-code-tts/hooks/auto-speak.sh"
+          }
+        ]
+      }
+    ]
+  }
+}
+```
+
+After editing `settings.json`, restart Claude Code, or approve the new hook when it prompts you, so the change takes effect. If you already have other hooks, keep them: add `Stop` alongside them rather than replacing the whole `hooks` block.
+
 ### Controls
 
 Put your settings in `~/.config/environment.d/claude-code-tts.conf`. Each setting is a plain `KEY=value` line. The hook re-reads this file on every response, so edits take effect immediately — no restart or re-login needed. A value you export in your shell, or put in front of a single command, always overrides the file.
@@ -218,8 +247,11 @@ Editing the config file is fine for your defaults, but for quick changes during 
 | `/tts mode full\|sentence\|off` | Set the auto-speak mode |
 | `/tts file PATH` | Read a text or Markdown file aloud now |
 | `/tts say TEXT` | Speak some text right now |
-| `/tts code include\|exclude` | Read code blocks aloud, or skip them |
+| `/tts stop` | Stop any read-out that is currently playing |
+| `/tts speed RATE` | Set playback speed, `0.5`–`2.0` (`default` for normal); pitch is preserved |
 | `/tts voice NAME` | Change the voice (or `default` to clear it) |
+| `/tts code include\|exclude` | Read code blocks aloud, or skip them |
+| `/tts markdown keep\|strip` | Keep Markdown markup, or strip it for cleaner speech |
 | `/tts cap N\|none` | Limit the number of spoken characters |
 | `/tts show` | Print the current settings |
 | `/tts reset` | Clear the on-the-fly changes and use the config file again |
@@ -283,6 +315,7 @@ claude-code-tts/
 │   └── speak-text/
 │       └── main.go           # Standalone CLI binary
 ├── hooks/
+│   ├── hooks.json            # Plugin hook declaration (Stop → auto-speak.sh)
 │   ├── auto-speak.sh         # Stop hook: speaks each response per config
 │   └── tts-common.sh         # Shared helpers: config, text cleaning, chunking
 ├── scripts/
@@ -305,7 +338,8 @@ claude-code-tts/
 │       ├── provider.go       # Synthesizer interface + provider registry
 │       ├── openai.go         # OpenAI TTS client
 │       └── elevenlabs.go     # ElevenLabs TTS client
-├── plugin.json                # Plugin metadata + hook config
+├── .claude-plugin/
+│   └── plugin.json            # Plugin manifest (name, version, metadata)
 ├── Makefile                   # Build automation
 └── install.sh                 # One-liner installer
 ```
