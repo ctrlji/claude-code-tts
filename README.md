@@ -60,6 +60,8 @@ When a request does not name a provider, the server picks a default. The `TTS_PR
 export TTS_PROVIDER="elevenlabs"      # optional: make ElevenLabs the default
 ```
 
+To use the plugin in every project and every VS Code window at once — including making your keys reach the VS Code GUI, which does not inherit your shell environment — see [docs/global-setup.md](docs/global-setup.md).
+
 ## Architecture
 
 ```
