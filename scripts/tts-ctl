@@ -10,7 +10,7 @@
 #   tts-ctl code <include|exclude>     read code blocks aloud, or skip them
 #   tts-ctl markdown <keep|strip>      keep Markdown markup, or strip it
 #   tts-ctl voice <NAME|default>       set the voice, or 'default' to clear it
-#   tts-ctl provider <openai|elevenlabs>
+#   tts-ctl provider <openai|elevenlabs|kokoro>
 #   tts-ctl cap <N|none>               spoken-character cap (none = no cap)
 #   tts-ctl speed <RATE|default>       playback speed, 0.5–2.0 (1.0 = normal)
 #   tts-ctl say <text...>              speak the given text right now
@@ -62,8 +62,8 @@ case "$cmd" in
         ;;
     provider)
         case "${1:-}" in
-            openai | elevenlabs) tts_set_runtime TTS_PROVIDER "$1"; echo "provider set to: $1" ;;
-            *) echo "tts-ctl provider: use openai or elevenlabs" >&2; exit 2 ;;
+            openai | elevenlabs | kokoro) tts_set_runtime TTS_PROVIDER "$1"; echo "provider set to: $1" ;;
+            *) echo "tts-ctl provider: use openai, elevenlabs, or kokoro" >&2; exit 2 ;;
         esac
         ;;
     cap)

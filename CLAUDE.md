@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-A Text-to-Speech MCP server plugin for Claude Code written in Go. It converts text to speech using OpenAI's TTS API or ElevenLabs and plays audio via platform-native players.
+A Text-to-Speech MCP server plugin for Claude Code written in Go. It converts text to speech using OpenAI's TTS API, ElevenLabs, or Kokoro (a free, open-weight model run through a local server) and plays audio via platform-native players.
 
 ## Commands
 
@@ -34,8 +34,9 @@ make install            # Installs to ~/.claude/plugins/claude-code-tts/
 ```
 ┌─────────────────────────────────────────────────────────────┐
 │  cmd/tts-server/main.go                                     │
-│    Entry point - requires at least one provider API key     │
-│    (OPENAI_API_KEY and/or ELEVENLABS_API_KEY)               │
+│    Entry point - requires at least one usable provider:     │
+│    an API key (OPENAI_API_KEY and/or ELEVENLABS_API_KEY),   │
+│    or keyless Kokoro (TTS_PROVIDER=kokoro / KOKORO_BASE_URL) │
 │                                                             │
 │  internal/server/                                           │
 │    server.go: MCP server setup, tool registration           │
@@ -53,7 +54,8 @@ make install            # Installs to ~/.claude/plugins/claude-code-tts/
 │    provider.go: Synthesizer interface + provider helpers    │
 │      - Each provider validates its own voices               │
 │      - DefaultProviderName(): TTS_PROVIDER env var, else    │
-│        picked from configured API keys (OpenAI preferred)   │
+│        picked from configured API keys (OpenAI preferred).  │
+│        Kokoro is never auto-picked (no key); opt-in only    │
 │    openai.go: OpenAI TTS API client                         │
 │      - POST /v1/audio/speech with tts-1 model               │
 │      - Voices: alloy, echo, fable, onyx, nova, shimmer      │
@@ -63,7 +65,11 @@ make install            # Installs to ~/.claude/plugins/claude-code-tts/
 │        cached); resolves names to IDs, raw IDs pass through │
 │      - Free-tier safe: no hardcoded (deprecated) premade    │
 │        voice IDs; falls back to Aria if discovery fails     │
-│      - Both clients return MP3 audio bytes                  │
+│    kokoro.go: Kokoro TTS client (local, keyless)            │
+│      - POST {KOKORO_BASE_URL}/v1/audio/speech, no auth      │
+│      - OpenAI-compatible body; response_format=mp3          │
+│      - Voice validation is pass-through (server decides)    │
+│      - All clients return MP3 audio bytes                   │
 │                                                             │
 │  internal/audio/                                            │
 │    player.go: Cross-platform audio playback                 │
@@ -83,13 +89,14 @@ make install            # Installs to ~/.claude/plugins/claude-code-tts/
 
 ## Environment
 
-- **Required**: at least one of `OPENAI_API_KEY` or `ELEVENLABS_API_KEY`
-- **Optional**: `TTS_PROVIDER` (`openai` or `elevenlabs`) to pick the default provider
+- **Required**: at least one usable provider — an `OPENAI_API_KEY` or `ELEVENLABS_API_KEY`, or keyless Kokoro (set `TTS_PROVIDER=kokoro`, or `KOKORO_BASE_URL`)
+- **Optional**: `TTS_PROVIDER` (`openai`, `elevenlabs`, or `kokoro`) to pick the default provider
+- **Optional**: `KOKORO_BASE_URL` — root address of a local Kokoro-FastAPI server (default `http://localhost:8880`)
 - **Go Version**: 1.21+ (go.mod specifies 1.23)
 
 ## MCP Tools
 
 | Tool | Parameters | Description |
 |------|------------|-------------|
-| `speak` | `text` (required), `provider` (optional: openai, elevenlabs), `voice` (optional; OpenAI: alloy, echo, fable, onyx, nova, shimmer; ElevenLabs: a voice name from your account or a raw voice ID, default Aria) | Queue TTS job |
+| `speak` | `text` (required), `provider` (optional: openai, elevenlabs, kokoro), `voice` (optional; OpenAI: alloy, echo, fable, onyx, nova, shimmer; ElevenLabs: a voice name from your account or a raw voice ID, default Aria; Kokoro: a voice name such as af_bella, default af_bella) | Queue TTS job |
 | `tts_status` | none | Get queue/worker stats |

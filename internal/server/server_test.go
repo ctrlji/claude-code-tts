@@ -230,8 +230,8 @@ func TestHandleStatus(t *testing.T) {
 	if status.QueueSize != 50 {
 		t.Errorf("expected queue_size 50, got %d", status.QueueSize)
 	}
-	if len(status.Providers) != 2 {
-		t.Errorf("expected 2 providers in status, got %d", len(status.Providers))
+	if len(status.Providers) != 3 {
+		t.Errorf("expected 3 providers in status, got %d", len(status.Providers))
 	}
 }
 

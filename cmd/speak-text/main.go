@@ -21,7 +21,7 @@ func apiKeyEnvVar(provider string) string {
 
 func main() {
 	// Parse flags
-	provider := flag.String("provider", "", "TTS provider: openai or elevenlabs (default: TTS_PROVIDER env var, else based on configured API keys)")
+	provider := flag.String("provider", "", "TTS provider: openai, elevenlabs, or kokoro (default: TTS_PROVIDER env var, else based on configured API keys)")
 	voice := flag.String("voice", "", "Voice to use (default: the provider's default voice)")
 	flag.Usage = func() {
 		fmt.Fprintf(os.Stderr, "Usage: %s [OPTIONS] TEXT\n\n", os.Args[0])
@@ -32,6 +32,8 @@ func main() {
 		fmt.Fprintf(os.Stderr, "  openai:     alloy, echo, fable, onyx, nova, shimmer\n")
 		fmt.Fprintf(os.Stderr, "  elevenlabs: a voice name from your account or a raw voice ID\n")
 		fmt.Fprintf(os.Stderr, "              (default: your account's first voice, or Aria)\n")
+		fmt.Fprintf(os.Stderr, "  kokoro:     a Kokoro voice, e.g. af_bella, af_heart, am_michael\n")
+		fmt.Fprintf(os.Stderr, "              (needs a local Kokoro server; no API key; default af_bella)\n")
 		fmt.Fprintf(os.Stderr, "\nExample:\n")
 		fmt.Fprintf(os.Stderr, "  %s \"Build completed\"\n", os.Args[0])
 		fmt.Fprintf(os.Stderr, "  %s -voice onyx \"Error occurred\"\n", os.Args[0])
@@ -60,11 +62,14 @@ func main() {
 		os.Exit(1)
 	}
 
-	// Validate environment for the chosen provider
-	keyVar := apiKeyEnvVar(providerName)
-	if os.Getenv(keyVar) == "" {
-		fmt.Fprintf(os.Stderr, "Error: %s environment variable is required for provider %s\n", keyVar, providerName)
-		os.Exit(1)
+	// Validate environment for the chosen provider. Kokoro runs locally and
+	// needs no API key, so it is exempt from this check.
+	if providerName != tts.ProviderKokoro {
+		keyVar := apiKeyEnvVar(providerName)
+		if os.Getenv(keyVar) == "" {
+			fmt.Fprintf(os.Stderr, "Error: %s environment variable is required for provider %s\n", keyVar, providerName)
+			os.Exit(1)
+		}
 	}
 
 	// Resolve and validate voice
