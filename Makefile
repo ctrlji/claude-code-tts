@@ -28,8 +28,20 @@ install: build
 	@mkdir -p $(INSTALL_DIR)/hooks
 	@cp bin/$(BINARY_NAME) $(INSTALL_DIR)/bin/
 	@cp bin/$(CLI_BINARY_NAME) $(INSTALL_DIR)/bin/
+	@cp scripts/speak-last $(INSTALL_DIR)/bin/
+	@cp scripts/speak-file $(INSTALL_DIR)/bin/
+	@cp scripts/tts-ctl $(INSTALL_DIR)/bin/
 	@cp hooks/auto-speak.sh $(INSTALL_DIR)/hooks/
+	@cp hooks/tts-common.sh $(INSTALL_DIR)/hooks/
 	@chmod +x $(INSTALL_DIR)/hooks/auto-speak.sh
+	@chmod +x $(INSTALL_DIR)/bin/speak-last $(INSTALL_DIR)/bin/speak-file $(INSTALL_DIR)/bin/tts-ctl
+	@mkdir -p $(INSTALL_DIR)/config
+	@cp config/claude-code-tts.conf.example $(INSTALL_DIR)/config/
+	@mkdir -p $(INSTALL_DIR)/commands
+	@cp commands/*.md $(INSTALL_DIR)/commands/
+	@mkdir -p $(HOME)/.claude/commands
+	@cp commands/*.md $(HOME)/.claude/commands/
+	@echo "Installed slash commands: /tts, /tts-last, /tts-full, /tts-sentence, /tts-off"
 	@cp plugin.json $(INSTALL_DIR)/
 	@cp .mcp.json $(INSTALL_DIR)/
 	@cp .claude/settings.json $(INSTALL_DIR)/.claude/

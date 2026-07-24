@@ -166,16 +166,67 @@ Get the current status of the TTS system.
 }
 ```
 
-## Automatic TTS (Deterministic)
+## Automatic TTS
 
-This plugin includes a **Stop hook** that automatically speaks the first sentence of every Claude response. No configuration needed - it just works.
+This plugin includes a **Stop hook** that speaks each Claude response out loud. A "Stop hook" is a script that Claude Code runs every time a response finishes. The hook reads the response text, tidies it up, and plays it.
 
-**How it works:**
+By default it speaks only the **first sentence**, as a short spoken summary. You can change how much it reads, whether it skips code, and which voice it uses. All of that is controlled by one config file.
+
+The hook runs in the background, so it never blocks Claude's responses. It also saves each response to `last-response.md` inside the plugin folder, so you can replay the whole thing on demand (see `speak-last` below).
+
+### Controls
+
+Put your settings in `~/.config/environment.d/claude-code-tts.conf`. Each setting is a plain `KEY=value` line. The hook re-reads this file on every response, so edits take effect immediately — no restart or re-login needed. A value you export in your shell, or put in front of a single command, always overrides the file.
+
+| Setting | Values | Default | What it does |
+|---------|--------|---------|--------------|
+| `TTS_SPEAK_MODE` | `sentence`, `full`, `off` | `sentence` | How much of each response to speak. `off` stops auto-speak but keeps the on-demand commands. |
+| `TTS_MAX_CHARS` | a number; `0` = no cap | `200` in sentence mode, `0` in full mode | Upper limit on the number of spoken characters. |
+| `TTS_STRIP_CODE` | `1`, `0` | `1` | `1` skips fenced code blocks; `0` reads them aloud. |
+| `TTS_STRIP_MARKDOWN` | `1`, `0` | `1` | `1` removes Markdown markup (headings, links, emphasis) for cleaner speech. |
+| `TTS_PROVIDER` | `openai`, `elevenlabs` | your `.env` value | Which provider to use. |
+| `TTS_VOICE` | a provider voice name or ID | provider default | Which voice to use. |
+| `TTS_CHUNK_CHARS` | a number | `1500` | Max characters per request when reading long text; longer input is split on sentence boundaries. |
+
+A starter file with all of these documented lives at `config/claude-code-tts.conf.example`.
+
+Some common setups:
+
+```bash
+# Read the whole response, but skip code blocks (good for hands-free review)
+TTS_SPEAK_MODE=full
+TTS_STRIP_CODE=1
+
+# Read everything, including code
+TTS_SPEAK_MODE=full
+TTS_STRIP_CODE=0
+
+# Turn auto-speak off and use the on-demand commands instead
+TTS_SPEAK_MODE=off
 ```
-Claude responds → Stop hook fires → First sentence extracted → Audio plays
-```
 
-The hook runs in the background and won't block Claude's responses.
+### Change it on the fly (slash commands)
+
+Editing the config file is fine for your defaults, but for quick changes during a session use the slash commands. They change settings instantly. The change applies to the very next response, and it overrides the config file until you reset it.
+
+| Command | What it does |
+|---------|--------------|
+| `/tts-full` | Speak the whole of every response from now on |
+| `/tts-sentence` | Go back to speaking only the first sentence |
+| `/tts-off` | Stop automatic speaking |
+| `/tts-last` | Read the last response aloud now (add `--with-code` to include code) |
+| `/tts mode full\|sentence\|off` | Set the auto-speak mode |
+| `/tts file PATH` | Read a text or Markdown file aloud now |
+| `/tts say TEXT` | Speak some text right now |
+| `/tts code include\|exclude` | Read code blocks aloud, or skip them |
+| `/tts voice NAME` | Change the voice (or `default` to clear it) |
+| `/tts cap N\|none` | Limit the number of spoken characters |
+| `/tts show` | Print the current settings |
+| `/tts reset` | Clear the on-the-fly changes and use the config file again |
+
+Under the hood these run `tts-ctl`, a small command installed next to `speak-text`. You can run it directly in a terminal too, for example `tts-ctl mode full` or `tts-ctl show`.
+
+Two notes. A brand-new slash command may only appear after you restart Claude Code once. The on-the-fly settings are stored in a `runtime.env` file inside the plugin folder, and `/tts reset` deletes it.
 
 ### speak-text CLI
 
@@ -198,6 +249,30 @@ speak-text -provider elevenlabs -voice 9BWtsMINqrJLrRacOk9x "Error occurred"
 
 Located at `~/.claude/plugins/claude-code-tts/bin/speak-text` after installation.
 
+### speak-last — replay the last response
+
+Speaks the most recent Claude response that the hook cached. By default it reads the whole response and skips code.
+
+```bash
+speak-last                 # whole last response, no code
+speak-last --with-code     # include code blocks
+speak-last --raw           # include code and Markdown markup, unchanged
+speak-last --voice onyx    # override the voice
+speak-last --provider openai
+```
+
+### speak-file — read a document aloud
+
+Reads any text or Markdown file out loud. By default it strips code and Markdown so a document reads cleanly, and it splits long files into chunks so nothing is too large for the provider.
+
+```bash
+speak-file NOTES.md                # read the file, no code, no markup
+speak-file --with-code README.md   # include code blocks
+speak-file --raw CHANGELOG.md      # read it exactly as written
+```
+
+Both commands install to `~/.claude/plugins/claude-code-tts/bin/`, next to `speak-text`.
+
 ## Project Structure
 
 ```
@@ -208,7 +283,18 @@ claude-code-tts/
 │   └── speak-text/
 │       └── main.go           # Standalone CLI binary
 ├── hooks/
-│   └── auto-speak.sh         # Stop hook for deterministic TTS
+│   ├── auto-speak.sh         # Stop hook: speaks each response per config
+│   └── tts-common.sh         # Shared helpers: config, text cleaning, chunking
+├── scripts/
+│   ├── speak-last            # Replay the last response on demand
+│   ├── speak-file            # Read a text/Markdown file aloud
+│   └── tts-ctl               # Change settings on the fly (backs the /tts commands)
+├── commands/
+│   ├── tts.md                # /tts dispatcher slash command
+│   ├── tts-last.md           # /tts-last, and tts-full/sentence/off shortcuts
+│   └── ...
+├── config/
+│   └── claude-code-tts.conf.example  # Documented config with all the knobs
 ├── internal/
 │   ├── audio/
 │   │   └── player.go         # Cross-platform audio playback
