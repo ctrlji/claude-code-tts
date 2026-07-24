@@ -2,6 +2,7 @@ package tts
 
 import (
 	"fmt"
+	"io"
 	"os"
 )
 
@@ -27,6 +28,18 @@ type Synthesizer interface {
 	DefaultVoice() string
 	// Voices returns the human-friendly voice names this provider accepts.
 	Voices() []string
+}
+
+// StreamSynthesizer is an optional interface for providers that can deliver
+// audio as a stream. When a provider implements it, callers can begin playback
+// as the first bytes arrive instead of waiting for the whole file, which cuts
+// the delay before the first sound is heard. The returned reader yields MP3
+// bytes and must be closed by the caller. Providers that do not implement this
+// interface are still played through the buffered Synthesize path.
+type StreamSynthesizer interface {
+	Synthesizer
+	// SynthesizeStream starts synthesis and returns the audio as a stream.
+	SynthesizeStream(text string, voice string) (io.ReadCloser, error)
 }
 
 // ProviderNames returns all supported provider identifiers.

@@ -152,3 +152,58 @@ func TestKokoroClient_Synthesize_APIError(t *testing.T) {
 		t.Error("expected error for API failure")
 	}
 }
+
+func TestKokoroClient_SynthesizeStream_Success(t *testing.T) {
+	expectedAudio := []byte("streamed-mp3-bytes")
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "" {
+			t.Errorf("expected no Authorization header, got %q", r.Header.Get("Authorization"))
+		}
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(expectedAudio)
+	}))
+	defer server.Close()
+
+	client := &KokoroClient{
+		httpClient: server.Client(),
+		model:      "kokoro",
+		baseURL:    server.URL,
+	}
+
+	stream, err := client.SynthesizeStream("Hello, world!", "af_bella")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	defer stream.Close()
+
+	got, err := io.ReadAll(stream)
+	if err != nil {
+		t.Fatalf("failed to read stream: %v", err)
+	}
+	if string(got) != string(expectedAudio) {
+		t.Errorf("expected audio %q, got %q", expectedAudio, got)
+	}
+}
+
+func TestKokoroClient_SynthesizeStream_APIError(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(`{"detail": "unknown voice"}`))
+	}))
+	defer server.Close()
+
+	client := &KokoroClient{
+		httpClient: server.Client(),
+		model:      "kokoro",
+		baseURL:    server.URL,
+	}
+
+	stream, err := client.SynthesizeStream("Hello", "nope")
+	if err == nil {
+		if stream != nil {
+			stream.Close()
+		}
+		t.Error("expected error for API failure")
+	}
+}

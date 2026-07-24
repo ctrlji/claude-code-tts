@@ -4,7 +4,9 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"os/signal"
 	"strings"
+	"syscall"
 
 	"github.com/ybouhjira/claude-code-tts/internal/audio"
 	"github.com/ybouhjira/claude-code-tts/internal/tts"
@@ -83,15 +85,41 @@ func main() {
 		os.Exit(1)
 	}
 
-	// Synthesize speech
+	player := audio.NewPlayer()
+
+	// Stop playback promptly when asked to. `tts-ctl stop` sends this process a
+	// termination signal; killing the player process here makes the read-out
+	// end right away instead of playing to the end of the current clip.
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+	go func() {
+		<-sigCh
+		player.Stop()
+		os.Exit(130)
+	}()
+
+	// Prefer streaming: begin playback as audio arrives so the first sound is
+	// heard almost immediately. Providers that cannot stream fall back to the
+	// buffered path, which synthesizes the whole clip before playing.
+	if streamer, ok := client.(tts.StreamSynthesizer); ok {
+		stream, err := streamer.SynthesizeStream(text, voiceName)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error synthesizing speech: %v\n", err)
+			os.Exit(1)
+		}
+		defer stream.Close()
+		if err := player.PlayStream(stream); err != nil {
+			fmt.Fprintf(os.Stderr, "Error playing audio: %v\n", err)
+			os.Exit(1)
+		}
+		return
+	}
+
 	audioData, err := client.Synthesize(text, voiceName)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error synthesizing speech: %v\n", err)
 		os.Exit(1)
 	}
-
-	// Play audio
-	player := audio.NewPlayer()
 	if err := player.Play(audioData); err != nil {
 		fmt.Fprintf(os.Stderr, "Error playing audio: %v\n", err)
 		os.Exit(1)

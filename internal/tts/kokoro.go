@@ -5,11 +5,16 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"os"
 	"strings"
 	"time"
 )
+
+// KokoroClient implements StreamSynthesizer so callers can start playback as
+// audio arrives.
+var _ StreamSynthesizer = (*KokoroClient)(nil)
 
 // defaultKokoroBaseURL is the address Kokoro-FastAPI listens on out of the box.
 // KOKORO_BASE_URL overrides it. The value is the server root (host and port);
@@ -51,9 +56,16 @@ func NewKokoroClient() *KokoroClient {
 	}
 	return &KokoroClient{
 		httpClient: &http.Client{
-			// Local CPU synthesis can be slower than a cloud API, so allow
-			// generous time even though long text is chunked before it arrives.
-			Timeout: 120 * time.Second,
+			// Deliberately no overall Timeout: when streaming, the response body
+			// is read at playback speed, so a long read-out can take longer than
+			// any fixed timeout and would be cut off mid-sentence. Instead, bound
+			// only the parts that should be quick — establishing the connection
+			// and receiving the response headers — so a missing or dead server
+			// still fails fast.
+			Transport: &http.Transport{
+				DialContext:           (&net.Dialer{Timeout: 10 * time.Second}).DialContext,
+				ResponseHeaderTimeout: 30 * time.Second,
+			},
 		},
 		model:   "kokoro",
 		baseURL: kokoroEndpoint(root),
@@ -107,8 +119,11 @@ type kokoroRequest struct {
 	ResponseFormat string `json:"response_format"`
 }
 
-// Synthesize converts text to speech and returns MP3 audio data.
-func (c *KokoroClient) Synthesize(text string, voice string) ([]byte, error) {
+// SynthesizeStream starts synthesis and returns the response body as a stream
+// of MP3 bytes. The caller must close the returned reader. Playback can begin
+// as soon as the first bytes arrive, so the first sound is heard almost
+// immediately rather than after the whole clip is synthesized.
+func (c *KokoroClient) SynthesizeStream(text string, voice string) (io.ReadCloser, error) {
 	reqBody := kokoroRequest{
 		Model:          c.model,
 		Input:          text,
@@ -133,14 +148,26 @@ func (c *KokoroClient) Synthesize(text string, voice string) ([]byte, error) {
 		// The usual cause is that no Kokoro server is running at baseURL.
 		return nil, fmt.Errorf("could not reach Kokoro server at %s (is it running?): %w", c.baseURL, err)
 	}
-	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
 		return nil, fmt.Errorf("API error (status %d): %s", resp.StatusCode, string(body))
 	}
 
-	audioData, err := io.ReadAll(resp.Body)
+	return resp.Body, nil
+}
+
+// Synthesize converts text to speech and returns the complete MP3 audio data.
+// It is the buffered path: it reads the whole stream before returning.
+func (c *KokoroClient) Synthesize(text string, voice string) ([]byte, error) {
+	stream, err := c.SynthesizeStream(text, voice)
+	if err != nil {
+		return nil, err
+	}
+	defer stream.Close()
+
+	audioData, err := io.ReadAll(stream)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read response: %w", err)
 	}
