@@ -34,6 +34,31 @@ PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$HOME/.claude/plugins/claude-code-tts}"
 
 usage() { grep -E '^#( |$)' "$0" | sed -E 's/^# ?//'; }
 
+# The /tts slash command's pre-executed line quotes its input ("$ARGUMENTS"),
+# so free text full of shell punctuation — parentheses, >=, apostrophes —
+# cannot break the shell there. The whole invocation then arrives here as ONE
+# glued argument ("say some text (like this)"); split it back apart. The
+# first word is the subcommand. For say, the rest stays one piece of text;
+# for every other subcommand the rest is word-split, exactly as an unquoted
+# call would have been (their arguments are simple tokens, never free text).
+if [ $# -eq 1 ]; then
+    case "$1" in
+        *[[:space:]]*)
+            glued="$1"
+            first="${glued%%[[:space:]]*}"
+            if [ "$first" = say ]; then
+                set -- say "${glued#*[[:space:]]}"
+            else
+                # set -f: word-split only, never glob-expand a stray * or ?.
+                set -f
+                # shellcheck disable=SC2086
+                set -- $glued
+                set +f
+            fi
+            ;;
+    esac
+fi
+
 cmd="${1:-}"
 [ $# -gt 0 ] && shift
 

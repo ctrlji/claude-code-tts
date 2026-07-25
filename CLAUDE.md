@@ -87,7 +87,14 @@ make install            # Installs to ~/.claude/plugins/claude-code-tts/
 │        the navigator and extracts per-session titles (last  │
 │        "ai-title" line, from bounded head/tail reads) and   │
 │        the real project path (first "cwd" field — the dir   │
-│        names under ~/.claude/projects are munged lossily)   │
+│        names under ~/.claude/projects are munged lossily).  │
+│        Message.Parts records where tool runs interrupted an │
+│        assistant turn: every part but the last is a         │
+│        "working note", which the page styles as quiet       │
+│        italic bullets ("Notes as bullets" toggle, default   │
+│        on); headings render at real h1-h6 sizes, and inline │
+│        markdown (code chips, bold, italic, links) renders   │
+│        styled while the spoken text stays clean             │
 │      - server.go: loopback-only HTTP server with embedded   │
 │        web page (assets/), /api/tts synthesis endpoint,     │
 │        SSE live updates as the transcript grows, and        │

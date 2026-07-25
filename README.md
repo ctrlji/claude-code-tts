@@ -382,6 +382,8 @@ Ways to control what is read:
 - **Right-click → Read from here** starts continuous reading from the paragraph under the cursor.
 - The **🔊 Read** button on a message reads just that one message.
 - **Auto-read new** makes the page speak each new Claude reply as it lands — a hands-free mode with visual tracking, unlike the plain auto-speak hook.
+- **Notes as bullets** (on by default) restyles Claude's *working notes* — the short passages it writes between tool runs, before the final answer — as quiet italic bullet points under a "working notes" label, so the answer itself stands out. Untick it to see the whole turn as one flat text. Markdown headings also render at their real sizes, stepping down from `#` to `######`.
+- **Inline Markdown renders styled**, like the chat panel: `` `code` `` appears as a monospace chip, **bold** stays bold, *italic* stays italic, ~~strikethrough~~ is struck through, and links show as their colored text. None of this changes what is spoken — the markers were never read aloud, and still aren't.
 
 Notes on how it works:
 

@@ -30,6 +30,10 @@ install: build
 	@mkdir -p $(INSTALL_DIR)/bin
 	@mkdir -p $(INSTALL_DIR)/.claude
 	@mkdir -p $(INSTALL_DIR)/hooks
+# Remove each installed binary before copying: overwriting a running
+# program fails with "Text file busy", while removing first just unlinks
+# the file (the running process keeps the old copy until it exits).
+	@rm -f $(INSTALL_DIR)/bin/$(BINARY_NAME) $(INSTALL_DIR)/bin/$(CLI_BINARY_NAME) $(INSTALL_DIR)/bin/$(READER_BINARY_NAME)
 	@cp bin/$(BINARY_NAME) $(INSTALL_DIR)/bin/
 	@cp bin/$(CLI_BINARY_NAME) $(INSTALL_DIR)/bin/
 	@cp bin/$(READER_BINARY_NAME) $(INSTALL_DIR)/bin/

@@ -6,9 +6,9 @@ allowed-tools: Bash(~/.claude/plugins/claude-code-tts/bin/tts-ctl:*)
 
 The TTS control command already ran before you were invoked. Its output:
 
-!`~/.claude/plugins/claude-code-tts/bin/tts-ctl $ARGUMENTS`
+!`~/.claude/plugins/claude-code-tts/bin/tts-ctl "$ARGUMENTS"`
 
-Reply with one short sentence telling the user what changed or what is now playing, based on the output above. Only if the output shows a shell quoting or syntax error (this can happen when free text after `say` contains quotes), run `~/.claude/plugins/claude-code-tts/bin/tts-ctl` yourself once with the arguments properly quoted. Otherwise do not run any tools and take no other action.
+Reply with one short sentence telling the user what changed or what is now playing, based on the output above. Only if the output shows a shell quoting or syntax error (possible when free text after `say` contains double quotes, backticks, `$`, or backslashes), run `~/.claude/plugins/claude-code-tts/bin/tts-ctl say` yourself once, passing the text as one properly single-quoted argument — never wrap it in backticks. Otherwise do not run any tools and take no other action.
 
 For reference, the subcommands are:
 - `mode full|sentence|off` — how much of each response is auto-spoken

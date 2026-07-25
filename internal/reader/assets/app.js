@@ -74,6 +74,7 @@ const settings = {
   speed: 1.0,
   follow: true,
   autoread: false,
+  interim: true, // style Claude's working notes as italic bullets
 };
 
 /* ---------------- settings persistence ---------------- */
@@ -129,16 +130,90 @@ function fmtTime(iso) {
 
 /* ---------------- text processing ---------------- */
 
-// Strip inline Markdown for display: the read-along view favors clean prose,
-// matching the plugin's default of stripping markup before speaking.
-function cleanInline(text) {
-  return text
-    .replace(/!\[[^\]]*\]\([^)]*\)/g, '')        // images
-    .replace(/\[([^\]]*)\]\([^)]*\)/g, '$1')     // links -> their text
-    .replace(/`+/g, '')
-    .replace(/\*\*+/g, '')
-    .replace(/(^|\s)\*(\S[^*]*\S|\S)\*(?=\s|$|[.,;:!?])/g, '$1$2') // *emphasis*
-    .replace(/(^|\s)_(\S[^_]*\S|\S)_(?=\s|$|[.,;:!?])/g, '$1$2');  // _emphasis_
+// Inline Markdown is parsed, not stripped: the chat panel shows `code` as a
+// chip and keeps **bold** bold, and the read-along view should look the same.
+// tokenizeInline turns raw text into segments whose text is CLEAN (markers
+// removed) — the clean text is what gets spoken and sentence-split — while
+// each segment's classes carry the styling to the word spans.
+const INLINE_TOKENS = [
+  { re: /^!\[[^\]]*\]\([^)]*\)/, cls: null },                    // image: dropped
+  { re: /^\[([^\]]*)\]\([^)]*\)/, cls: 'md-link', inner: 1 },    // link: keep its text
+  { re: /^(`+)([^`]+)\1/, cls: 'md-code', inner: 2, flat: true }, // no nesting inside code
+  { re: /^\*\*\*([^*]+)\*\*\*/, cls: 'md-b md-i', inner: 1 },
+  { re: /^\*\*((?:[^*]|\*(?!\*))+)\*\*/, cls: 'md-b', inner: 1 },
+  { re: /^__((?:[^_]|_(?!_))+)__/, cls: 'md-b', inner: 1 },
+  { re: /^~~([^~]+)~~/, cls: 'md-s', inner: 1 },
+];
+// Single-marker emphasis only opens at a word boundary and closes before one,
+// so identifiers like snake_case or a lone asterisk stay plain text.
+const ITALIC_TOKENS = [
+  { re: /^\*([^*\s](?:[^*]*[^*\s])?)\*/, cls: 'md-i', inner: 1 },
+  { re: /^_([^_\s](?:[^_]*[^_\s])?)_/, cls: 'md-i', inner: 1 },
+];
+const ITALIC_BEFORE = /[\s(["'—-]/;
+const ITALIC_AFTER = /[\s.,;:!?)\]"']/;
+
+function tokenizeInline(src) {
+  const out = [];
+  let plain = '';
+  const flush = () => { if (plain) { out.push({ text: plain, cls: '' }); plain = ''; } };
+  let i = 0;
+  let prev = ''; // the character before position i, for italic word boundaries
+  while (i < src.length) {
+    const rest = src.slice(i);
+    let m = null;
+    let tok = null;
+    for (const t of INLINE_TOKENS) {
+      m = rest.match(t.re);
+      if (m) { tok = t; break; }
+    }
+    if (!m && (prev === '' || ITALIC_BEFORE.test(prev))) {
+      for (const t of ITALIC_TOKENS) {
+        const mm = rest.match(t.re);
+        if (!mm) continue;
+        const after = src[i + mm[0].length];
+        if (after === undefined || ITALIC_AFTER.test(after)) { m = mm; tok = t; break; }
+      }
+    }
+    if (!m) { plain += src[i]; prev = src[i]; i += 1; continue; }
+    flush();
+    if (tok.cls !== null) {
+      const innerText = m[tok.inner];
+      if (tok.flat) {
+        out.push({ text: innerText, cls: tok.cls });
+      } else {
+        // Recurse so **bold with `code` inside** styles both.
+        for (const seg of tokenizeInline(innerText)) {
+          out.push({ text: seg.text, cls: seg.cls ? seg.cls + ' ' + tok.cls : tok.cls });
+        }
+      }
+    }
+    prev = m[0][m[0].length - 1];
+    i += m[0].length;
+  }
+  flush();
+  return out;
+}
+
+// inlineRuns flattens the styled segments into one whitespace-normalized
+// clean string plus style ranges over it. Sentence splitting and speech run
+// on the clean string exactly as before; the ranges re-attach the styling to
+// the word spans afterwards.
+function inlineRuns(raw) {
+  let clean = '';
+  const runs = [];
+  for (const seg of tokenizeInline(raw)) {
+    const start = clean.length;
+    for (const ch of seg.text) {
+      if (/\s/.test(ch)) {
+        if (clean && !clean.endsWith(' ')) clean += ' ';
+      } else {
+        clean += ch;
+      }
+    }
+    if (seg.cls && clean.length > start) runs.push({ start, end: clean.length, cls: seg.cls });
+  }
+  return { clean, runs };
 }
 
 // Words that end with a period but usually do not end a sentence.
@@ -175,24 +250,50 @@ function splitSentences(text) {
 
 /* ---------------- rendering ---------------- */
 
-function makeSentenceSpan(sentence) {
+// makeSentenceSpan builds one clickable sentence. runs/base carry the inline
+// styling: base is where this sentence starts in the paragraph's clean text,
+// and any style range overlapping a word puts its classes on that word span.
+function makeSentenceSpan(sentence, runs, base) {
   const span = el('span', 'sent');
   span.dataset.t = sentence;
   span.title = 'Click to read from here';
+  let pos = 0;
   for (const token of sentence.split(/(\s+)/)) {
     if (!token) continue;
-    if (/^\s+$/.test(token)) span.append(token);
-    else span.append(el('span', 'w', token));
+    if (/^\s+$/.test(token)) {
+      span.append(token);
+    } else {
+      const w = el('span', 'w', token);
+      if (runs && runs.length && base >= 0) {
+        const a = base + pos;
+        const b = a + token.length;
+        const cls = new Set();
+        for (const r of runs) {
+          if (r.start < b && r.end > a) r.cls.split(' ').forEach((c) => cls.add(c));
+        }
+        if (cls.size) w.className = 'w ' + [...cls].join(' ');
+      }
+      span.append(w);
+    }
+    pos += token.length;
   }
   return span;
 }
 
-// appendSentences fills a block element with sentence spans separated by spaces.
-function appendSentences(block, text) {
-  const sentences = splitSentences(text);
+// appendSentences fills a block element with sentence spans separated by
+// spaces. The raw Markdown is parsed once: the clean text drives sentence
+// splitting and speech, the style ranges drive the display styling.
+function appendSentences(block, raw) {
+  const { clean, runs } = inlineRuns(raw);
+  const sentences = splitSentences(clean);
+  let cursor = 0;
   sentences.forEach((s, i) => {
     if (i > 0) block.append(' ');
-    block.append(makeSentenceSpan(s));
+    // Every sentence is a substring of the clean text, so a moving indexOf
+    // recovers its offset — which is what anchors the style ranges.
+    const at = clean.indexOf(s, cursor);
+    if (at >= 0) cursor = at + s.length;
+    block.append(makeSentenceSpan(s, runs, at));
   });
 }
 
@@ -351,7 +452,7 @@ function renderBody(text) {
   const flushPara = () => {
     if (!para.length) return;
     const p = el('p');
-    appendSentences(p, cleanInline(para.join(' ')));
+    appendSentences(p, para.join(' '));
     body.append(p);
     para = [];
   };
@@ -381,9 +482,9 @@ function renderBody(text) {
     const heading = trimmed.match(/^(#{1,6})\s+(.*)$/);
     if (heading) {
       flushPara();
-      const level = Math.min(heading[1].length, 3);
+      const level = heading[1].length; // 1..6, each with its own size in CSS
       const h = el('p', 'h h' + level);
-      appendSentences(h, cleanInline(heading[2]));
+      appendSentences(h, heading[2]);
       body.append(h);
       continue;
     }
@@ -393,7 +494,7 @@ function renderBody(text) {
       flushPara();
       const li = el('p', numbered ? 'li num' : 'li');
       const content = bullet ? bullet[1] : numbered[1] + '. ' + numbered[2];
-      appendSentences(li, cleanInline(content));
+      appendSentences(li, content);
       body.append(li);
       continue;
     }
@@ -403,6 +504,25 @@ function renderBody(text) {
     body.append(renderCodeBlock(code.lines.join('\n'), code.lang));
   }
   flushPara();
+  return body;
+}
+
+// renderTurnBody renders one turn's text. An assistant turn that was
+// interrupted by tool runs arrives with msg.parts: every part but the last is
+// a "working note" written before a tool ran, and the last part is the final
+// answer. When the "Notes as bullets" toggle is on, the notes are grouped in
+// a visually quieter block (italic, bulleted) above the final answer. With
+// the toggle off — or for any single-part turn — the whole text renders the
+// classic way.
+function renderTurnBody(msg) {
+  const split = msg.role === 'assistant' && settings.interim &&
+    Array.isArray(msg.parts) && msg.parts.length > 1;
+  if (!split) return renderBody(msg.text);
+  const body = el('div', 'msg-body');
+  const notes = el('div', 'interim');
+  notes.append(el('div', 'interim-label', 'working notes'));
+  for (const part of msg.parts.slice(0, -1)) notes.append(renderBody(part));
+  body.append(notes, renderBody(msg.parts[msg.parts.length - 1]));
   return body;
 }
 
@@ -420,7 +540,7 @@ function renderMessage(msg, index) {
     readCard(card);
   });
   head.append(readBtn);
-  card.append(head, renderBody(msg.text));
+  card.append(head, renderTurnBody(msg));
   return card;
 }
 
@@ -724,6 +844,7 @@ function populateControls() {
   $('#inp-voice').value = settings.voice;
   $('#chk-follow').checked = settings.follow;
   $('#chk-autoread').checked = settings.autoread;
+  $('#chk-interim').checked = settings.interim;
   refreshVoiceOptions();
 
   provSel.addEventListener('change', () => {
@@ -745,6 +866,11 @@ function populateControls() {
   });
   $('#chk-follow').addEventListener('change', () => { settings.follow = $('#chk-follow').checked; saveSettings(); });
   $('#chk-autoread').addEventListener('change', () => { settings.autoread = $('#chk-autoread').checked; saveSettings(); });
+  $('#chk-interim').addEventListener('change', () => {
+    settings.interim = $('#chk-interim').checked;
+    saveSettings();
+    rerenderMessages();
+  });
 
   $('#btn-play').addEventListener('click', togglePlay);
   $('#btn-stop').addEventListener('click', stopPlayback);
@@ -875,6 +1001,18 @@ function applyPendingReplace() {
   state.pendingReplace = null;
   state.messages = msgs;
   renderAll(msgs);
+}
+
+// rerenderMessages redraws the conversation with the current settings (used
+// by the "Notes as bullets" toggle). A redraw would yank the DOM out from
+// under an active read-out, so during playback it is queued the same way a
+// transcript rewrite is, and applies when playback stops.
+function rerenderMessages() {
+  if (state.playing || state.selReading) {
+    state.pendingReplace = state.messages;
+    return;
+  }
+  renderAll(state.messages);
 }
 
 async function refreshMessages() {

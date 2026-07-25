@@ -62,6 +62,47 @@ func TestParseTranscript(t *testing.T) {
 	}
 }
 
+// A turn interrupted by a tool run keeps its chunks in Parts (working notes,
+// then the final answer); uninterrupted turns and user turns omit the field.
+func TestParseTranscriptParts(t *testing.T) {
+	msgs, err := ParseTranscript(writeTranscript(t, fixture))
+	if err != nil {
+		t.Fatalf("ParseTranscript: %v", err)
+	}
+	interrupted := msgs[1] // "Hi! How can I help?" + tool result + "Second part."
+	if len(interrupted.Parts) != 2 {
+		t.Fatalf("interrupted turn: got parts %q, want 2 of them", interrupted.Parts)
+	}
+	if interrupted.Parts[0] != "Hi! How can I help?" || interrupted.Parts[1] != "Second part." {
+		t.Errorf("interrupted turn: wrong parts %q", interrupted.Parts)
+	}
+	if msgs[0].Parts != nil || msgs[2].Parts != nil || msgs[3].Parts != nil {
+		t.Errorf("single-part turns must omit Parts, got %+v", msgs)
+	}
+}
+
+// Adjacent assistant text lines with nothing between them are one continuous
+// piece of writing, not a working note plus an answer.
+func TestParseTranscriptAdjacentTextIsOnePart(t *testing.T) {
+	transcript := `{"type":"user","message":{"role":"user","content":"Hi."}}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"First chunk."}]}}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"Same breath."}]}}
+`
+	msgs, err := ParseTranscript(writeTranscript(t, transcript))
+	if err != nil {
+		t.Fatalf("ParseTranscript: %v", err)
+	}
+	if len(msgs) != 2 {
+		t.Fatalf("got %d messages, want 2: %+v", len(msgs), msgs)
+	}
+	if msgs[1].Parts != nil {
+		t.Errorf("adjacent text chunks should stay one part, got %q", msgs[1].Parts)
+	}
+	if msgs[1].Text != "First chunk.\n\nSame breath." {
+		t.Errorf("merged text wrong: %q", msgs[1].Text)
+	}
+}
+
 func TestParseTranscriptMissingFile(t *testing.T) {
 	if _, err := ParseTranscript(filepath.Join(t.TempDir(), "nope.jsonl")); err == nil {
 		t.Fatal("expected an error for a missing transcript")

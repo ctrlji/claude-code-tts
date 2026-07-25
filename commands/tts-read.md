@@ -6,7 +6,7 @@ allowed-tools: Bash(~/.claude/plugins/claude-code-tts/bin/tts-ctl:*)
 
 The read-along view already launched before you were invoked. Command output:
 
-!`~/.claude/plugins/claude-code-tts/bin/tts-ctl read $ARGUMENTS`
+!`~/.claude/plugins/claude-code-tts/bin/tts-ctl "read $ARGUMENTS"`
 
 Reply with one short sentence telling the user the read-along view is ready,
 based on the output above. Always include the URL from the output written as

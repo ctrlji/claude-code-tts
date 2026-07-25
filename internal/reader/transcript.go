@@ -20,9 +20,15 @@ import (
 
 // Message is one visible chat turn extracted from a session transcript.
 type Message struct {
-	Role      string `json:"role"` // "user" or "assistant"
-	Text      string `json:"text"` // Markdown-ish plain text of the turn
-	Timestamp string `json:"timestamp,omitempty"`
+	Role string `json:"role"` // "user" or "assistant"
+	Text string `json:"text"` // Markdown-ish plain text of the turn
+	// Parts splits an assistant turn's text at the places where tool activity
+	// interrupted it. Every part except the last is a "working note" the model
+	// wrote before running a tool; the last part is the final answer. The
+	// field is only set when a turn actually has more than one part, so most
+	// messages omit it.
+	Parts     []string `json:"parts,omitempty"`
+	Timestamp string   `json:"timestamp,omitempty"`
 }
 
 // rawEntry mirrors just the fields we need from one transcript line. The
@@ -72,7 +78,8 @@ var noiseUserPrefixes = []string{
 // blocks, meta entries, and sidechain (subagent) entries are skipped. All text
 // an assistant turn produces, including text between tool calls, is merged
 // into a single message, because that is how the turn reads in the chat
-// window.
+// window. The individual chunks are additionally kept in Message.Parts so the
+// page can style the working notes differently from the final answer.
 func ParseTranscript(path string) ([]Message, error) {
 	f, err := os.Open(path)
 	if err != nil {
@@ -81,6 +88,11 @@ func ParseTranscript(path string) ([]Message, error) {
 	defer f.Close()
 
 	messages := []Message{}
+	// sawGap remembers that at least one non-visible line (a tool call, a tool
+	// result, a thinking block) sat between the previous visible text and the
+	// next one. That gap is what separates a "working note" from the text that
+	// follows it, so it decides whether merged assistant text opens a new part.
+	sawGap := false
 	// A plain Reader, not a Scanner: single transcript lines can hold huge
 	// tool results, far beyond any fixed Scanner buffer.
 	r := bufio.NewReaderSize(f, 64*1024)
@@ -88,19 +100,40 @@ func ParseTranscript(path string) ([]Message, error) {
 		line, err := r.ReadString('\n')
 		if line != "" {
 			if msg, ok := parseLine(line); ok {
-				if msg.Role == "assistant" && len(messages) > 0 && messages[len(messages)-1].Role == "assistant" {
+				last := len(messages) - 1
+				if msg.Role == "assistant" && last >= 0 && messages[last].Role == "assistant" {
 					// Continuation of the same turn (tool results in between
 					// were skipped): merge instead of starting a new bubble.
-					messages[len(messages)-1].Text += "\n\n" + msg.Text
+					messages[last].Text += "\n\n" + msg.Text
+					if sawGap {
+						// Tool activity interrupted the turn here, so this
+						// text starts a new part.
+						messages[last].Parts = append(messages[last].Parts, msg.Text)
+					} else {
+						// Adjacent text chunks with nothing between them are
+						// one continuous piece of writing.
+						messages[last].Parts[len(messages[last].Parts)-1] += "\n\n" + msg.Text
+					}
 				} else {
+					msg.Parts = []string{msg.Text}
 					messages = append(messages, msg)
 				}
+				sawGap = false
+			} else if strings.TrimSpace(line) != "" {
+				sawGap = true
 			}
 		}
 		if err != nil {
 			// io.EOF, or a truncated tail while the session is still being
 			// written; either way the turns parsed so far are what we show.
 			break
+		}
+	}
+	// A single-part turn carries no extra information in Parts; drop the field
+	// so the JSON payload stays as small as before for the common case.
+	for i := range messages {
+		if len(messages[i].Parts) <= 1 {
+			messages[i].Parts = nil
 		}
 	}
 	return messages, nil
