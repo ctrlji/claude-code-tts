@@ -18,6 +18,7 @@ A Text-to-Speech MCP server plugin for Claude Code that converts text to speech 
 - **Mutex-Protected Playback**: One audio plays at a time, no overlapping
 - **Cross-Platform**: macOS (afplay), Linux (mpv/ffplay/mpg123), Windows (PowerShell)
 - **Standalone CLI**: `speak-text` binary for direct TTS without MCP
+- **Read-Along View**: `/tts-read` opens the conversation in a browser page that reads it aloud and highlights each sentence and word as it is spoken; select any text and read just that part from the right-click menu
 
 ## Quick Install
 
@@ -283,9 +284,12 @@ Editing the config file is fine for your defaults, but for quick changes during 
 | `/tts-sentence` | Go back to speaking only the first sentence |
 | `/tts-off` | Stop automatic speaking |
 | `/tts-last` | Read the last response aloud now (add `--with-code` to include code) |
+| `/tts-read` | Open the read-along browser view of this conversation |
 | `/tts mode full\|sentence\|off` | Set the auto-speak mode |
 | `/tts file PATH` | Read a text or Markdown file aloud now |
+| `/tts read [PATH]` | Same as `/tts-read`; optionally name a transcript file |
 | `/tts say TEXT` | Speak some text right now |
+| `/tts selection` | Speak the text currently highlighted in any window (see below) |
 | `/tts stop` | Stop any read-out that is currently playing |
 | `/tts speed RATE` | Set playback speed, `0.5`–`2.0` (`default` for normal); pitch is preserved |
 | `/tts voice NAME` | Change the voice (or `default` to clear it) |
@@ -296,6 +300,8 @@ Editing the config file is fine for your defaults, but for quick changes during 
 | `/tts reset` | Clear the on-the-fly changes and use the config file again |
 
 Under the hood these run `tts-ctl`, a small command installed next to `speak-text`. You can run it directly in a terminal too, for example `tts-ctl mode full` or `tts-ctl show`.
+
+The slash commands act instantly: the `tts-ctl` call is embedded in the command file with Claude Code's `!` pre-execution syntax, so it runs the moment you press Enter — before the model turn starts. Claude's reply afterward is only a confirmation; the audio or setting change never waits for it.
 
 Two notes. A brand-new slash command may only appear after you restart Claude Code once. The on-the-fly settings are stored in a `runtime.env` file inside the plugin folder, and `/tts reset` deletes it.
 
@@ -348,6 +354,98 @@ speak-file --raw CHANGELOG.md      # read it exactly as written
 
 Both commands install to `~/.claude/plugins/claude-code-tts/bin/`, next to `speak-text`.
 
+## Read-along mode (`/tts-read`)
+
+Run `/tts-read` inside Claude Code (or `tts-ctl read` in a terminal) and the current conversation opens as a clean reading page. Press Play and the page reads the conversation aloud. The sentence being spoken gets a soft highlight, and inside it the word being spoken gets a stronger one, karaoke style. The page follows along by scrolling, and it live-updates as the session continues — new replies appear at the bottom as they arrive.
+
+### Where it opens
+
+- **Inside VS Code (default when you work in VS Code).** The command prints a link; clicking it opens the page as an editor tab, right next to your chat, using VS Code's built-in Simple Browser. This needs a one-time setting so VS Code knows to keep that address in the editor — add this to your VS Code `settings.json`:
+
+  ```json
+  "workbench.externalUriOpeners": {
+    "127.0.0.1:8898": "simpleBrowser.open",
+    "localhost:8898": "simpleBrowser.open"
+  }
+  ```
+
+  Without the setting, the click falls back to your system browser. (If you change `TTS_READER_PORT`, use the same port here.)
+- **System web browser.** Pass `--browser` (`/tts-read --browser`, or `tts-ctl read --browser`) to open the page in your regular browser instead.
+- **Outside VS Code.** When the command runs in a plain terminal, the system browser opens automatically, as before.
+
+Ways to control what is read:
+
+- **Play / Pause / Stop** buttons, plus **Space** to toggle and **←/→** to jump a sentence back or forward.
+- **Click any sentence** to start reading from that exact spot.
+- **Select any text**, then right-click and choose **Read selection** (a small floating "Read selection" button also appears near the selection). Only the selected text is read.
+- **Right-click → Read from here** starts continuous reading from the paragraph under the cursor.
+- The **🔊 Read** button on a message reads just that one message.
+- **Auto-read new** makes the page speak each new Claude reply as it lands — a hands-free mode with visual tracking, unlike the plain auto-speak hook.
+
+Notes on how it works:
+
+- The **browser** plays the audio in read-along mode (not the plugin's native player) because only the page itself can keep the highlight in step with playback. Audio is fetched one sentence at a time from the plugin's local server, so sentence highlighting is exact; word timing within a sentence is estimated from word lengths, which tracks real speech closely.
+- It uses the same providers, voice, and speed settings as everything else (`/tts voice`, `/tts speed`, `/tts provider` are honored when the page opens; the page also has its own pickers).
+- Code blocks are shown but skipped during continuous reading. To hear code, select it and use **Read selection**.
+- `/tts stop` (or `tts-ctl stop`, or the Ctrl+Alt+X hotkey) also silences every open read-along page, not just the native player: page audio lives in the browser where process kills cannot reach, so the reader server relays the stop to all connected pages over its live event stream.
+- The page is served on `127.0.0.1` only (default port `8898`, changeable with `TTS_READER_PORT`). Requests from other machines or foreign web pages are rejected.
+- Running `/tts-read` again reuses the already-open reader instead of starting a second one. Pass a path (`/tts-read ~/.claude/projects/<project>/<session>.jsonl`) to read a different or older session.
+- VS Code offers no command-line way to run a workbench command in an already-running window, so a plain shell cannot open the Simple Browser by itself. Without the companion extension (next section) the printed link is a one-click open; with it, the open is fully automatic.
+
+### The companion VS Code extension (right-click in the real chat + zero-click opens)
+
+`make install-vscode-ext` installs a tiny local extension, `claude-code-tts-bridge` (about sixty lines, no marketplace, no network). It adds two things that are impossible from outside the editor:
+
+- **"Read selection aloud (TTS)" in the right-click menu of the actual Claude Code chat panel.** VS Code lets an extension contribute items to another extension's webview menu (the `webview/context` contribution point, scoped to the Claude panel's view IDs). The menu API does not expose the selected text, so on Linux the command reads the X11 primary selection — which your highlight already filled. The same menu item appears in normal editors too, where the selection comes straight from the editor API (so that path also works on Wayland and macOS).
+- **Zero-click `/tts-read`.** The extension watches `~/.claude/plugins/claude-code-tts/reader.open`; the `tts-read` launcher writes the page URL there when it runs inside VS Code, and the extension opens the read-along view as an editor tab. This is a file-based bridge in the style of Talon's command-server: protected by ordinary filesystem permissions, with no localhost command socket that other processes or web pages could poke.
+
+Reload the VS Code window once after installing. A "Stop TTS read-out" item is included in the chat panel's menu as well.
+
+### Read the real chat panel: highlight + hotkey (Linux/X11)
+
+The Claude Code chat panel itself is a closed webview: no extension can add buttons, menus, or highlighting inside it, and Ctrl+C on selected chat text is unreliable (a known Claude Code bug). But on Linux/X11 there is a clean hack: the moment you highlight text with the mouse — in the chat panel, an editor, anywhere — X11 places it in the *primary selection*, no copy needed. `tts-ctl selection` (or `/tts selection`) reads that and speaks it.
+
+Bind it to keys and it becomes seamless. In your VS Code **keybindings.json**:
+
+```json
+{ "key": "ctrl+alt+s", "command": "workbench.action.tasks.runTask", "args": "TTS: Read selection" },
+{ "key": "ctrl+alt+x", "command": "workbench.action.tasks.runTask", "args": "TTS: Stop reading" },
+{ "key": "ctrl+alt+r", "command": "simpleBrowser.show", "args": "http://127.0.0.1:8898/" }
+```
+
+…with two matching entries in your user **tasks.json** (they run silently, no terminal pop-up):
+
+```json
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "TTS: Read selection",
+      "type": "shell",
+      "command": "$HOME/.claude/plugins/claude-code-tts/bin/tts-ctl selection",
+      "presentation": { "reveal": "never", "echo": false, "focus": false, "panel": "dedicated", "close": true },
+      "problemMatcher": []
+    },
+    {
+      "label": "TTS: Stop reading",
+      "type": "shell",
+      "command": "$HOME/.claude/plugins/claude-code-tts/bin/tts-ctl stop",
+      "presentation": { "reveal": "never", "echo": false, "focus": false, "panel": "dedicated", "close": true },
+      "problemMatcher": []
+    }
+  ]
+}
+```
+
+The result:
+
+- **Ctrl+Alt+S** — highlight anything in the Claude Code chat and hear it read aloud.
+- **Ctrl+Alt+X** — instantly stop the read-out.
+- **Ctrl+Alt+R** — open the read-along view as a VS Code editor tab with zero clicks.
+
+The selection reader needs `python3` with tkinter (preinstalled on most desktop Linux distributions). On Wayland sessions, install `wl-clipboard` and adapt; on macOS there is no primary selection, so use the read-along view's own selection reading instead.
+- The conversation is loaded from the session's transcript file on disk. That format is internal to Claude Code, so the parser is deliberately tolerant; if a future Claude Code release changes it, the page may show less until the plugin is updated.
+
 ## Project Structure
 
 ```
@@ -355,8 +453,10 @@ claude-code-tts/
 ├── cmd/
 │   ├── tts-server/
 │   │   └── main.go           # MCP server entry point
-│   └── speak-text/
-│       └── main.go           # Standalone CLI binary
+│   ├── speak-text/
+│   │   └── main.go           # Standalone CLI binary
+│   └── tts-reader/
+│       └── main.go           # Read-along view launcher (/tts-read)
 ├── hooks/
 │   ├── hooks.json            # Plugin hook declaration (Stop → auto-speak.sh)
 │   ├── auto-speak.sh         # Stop hook: speaks each response per config
@@ -364,6 +464,7 @@ claude-code-tts/
 ├── scripts/
 │   ├── speak-last            # Replay the last response on demand
 │   ├── speak-file            # Read a text/Markdown file aloud
+│   ├── tts-read              # Launch the read-along view (backs /tts-read)
 │   └── tts-ctl               # Change settings on the fly (backs the /tts commands)
 ├── commands/
 │   ├── tts.md                # /tts dispatcher slash command
@@ -374,6 +475,10 @@ claude-code-tts/
 ├── internal/
 │   ├── audio/
 │   │   └── player.go         # Cross-platform audio playback
+│   ├── reader/
+│   │   ├── transcript.go     # Session transcript (JSONL) parser
+│   │   ├── server.go         # Loopback web server for the read-along view
+│   │   └── assets/           # The read-along page (HTML/CSS/JS, embedded)
 │   ├── server/
 │   │   ├── server.go         # MCP server & tool handlers
 │   │   └── worker.go         # Worker pool implementation

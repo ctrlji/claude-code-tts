@@ -76,6 +76,34 @@ make install            # Installs to ~/.claude/plugins/claude-code-tts/
 │      - Mutex-protected (one audio at a time)                │
 │      - macOS: afplay, Linux: mpv/ffplay/mpg123              │
 │      - Windows: PowerShell Media.SoundPlayer                │
+│                                                             │
+│  cmd/tts-reader/main.go + internal/reader/                  │
+│    Read-along view (launched by `tts-ctl read` / /tts-read) │
+│      - transcript.go: parses the session's JSONL transcript │
+│        into visible chat turns (skips tool calls, thinking, │
+│        meta lines, sidechains, command noise)               │
+│      - server.go: loopback-only HTTP server with embedded   │
+│        web page (assets/), /api/tts synthesis endpoint,     │
+│        SSE live updates as the transcript grows, and        │
+│        single-instance reuse via /api/health + /api/load    │
+│      - The BROWSER plays the audio here (not player.go) so  │
+│        the page can highlight each sentence/word in sync;   │
+│        sentence timing is exact (one clip per sentence),    │
+│        word timing is estimated proportionally to length    │
+│      - Inside VS Code the launcher does NOT open the system │
+│        browser: it prints a clickable URL that opens as a   │
+│        Simple Browser editor tab via the user's             │
+│        workbench.externalUriOpeners rule (see README).      │
+│        --browser forces the system browser anywhere         │
+│                                                             │
+│  scripts/tts-ctl `selection` (X11 only)                     │
+│    Speaks the text currently highlighted in ANY window,     │
+│    including the Claude Code chat panel, by reading the X11 │
+│    primary selection via python3/tkinter. The chat panel is │
+│    a closed webview (no extension API, no context-menu      │
+│    injection), so highlight+hotkey is the only way to read  │
+│    from it directly; README documents the VS Code           │
+│    keybinding/task setup                                    │
 └─────────────────────────────────────────────────────────────┘
 ```
 
@@ -92,6 +120,7 @@ make install            # Installs to ~/.claude/plugins/claude-code-tts/
 - **Required**: at least one usable provider — an `OPENAI_API_KEY` or `ELEVENLABS_API_KEY`, or keyless Kokoro (set `TTS_PROVIDER=kokoro`, or `KOKORO_BASE_URL`)
 - **Optional**: `TTS_PROVIDER` (`openai`, `elevenlabs`, or `kokoro`) to pick the default provider
 - **Optional**: `KOKORO_BASE_URL` — root address of a local Kokoro-FastAPI server (default `http://localhost:8880`)
+- **Optional**: `TTS_READER_PORT` — port for the read-along view's local server (default `8898`, loopback only)
 - **Go Version**: 1.21+ (go.mod specifies 1.23)
 
 ## MCP Tools
