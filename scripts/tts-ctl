@@ -19,6 +19,9 @@
 #   tts-ctl read [PATH] [--browser]    open the read-along view (VS Code tab by
 #                                      default inside VS Code; --browser forces
 #                                      the system web browser)
+#   tts-ctl selection                  speak the text currently highlighted in
+#                                      any window (X11 primary selection) —
+#                                      works on the Claude Code chat panel too
 #   tts-ctl stop                       stop any read-out in progress
 #   tts-ctl set KEY VALUE              set any TTS_* variable directly
 #   tts-ctl show                       print the current effective settings
@@ -110,6 +113,41 @@ case "$cmd" in
         ;;
     read)
         exec "$PLUGIN_ROOT/bin/tts-read" "$@"
+        ;;
+    selection | sel)
+        # Speak whatever text is currently highlighted in ANY window. On X11,
+        # highlighting text places it in the "primary selection" the moment it
+        # is selected — no copy needed. That includes VS Code's Claude Code
+        # chat panel, where Ctrl+C on a selection is known to be unreliable.
+        # tkinter ships with python3 and can read the selection without extra
+        # packages like xclip.
+        sel="$(python3 - <<'PY' 2>/dev/null
+import tkinter
+r = tkinter.Tk(); r.withdraw()
+out = ""
+for t in ("UTF8_STRING", "STRING"):
+    try:
+        out = r.selection_get(selection="PRIMARY", type=t)
+        break
+    except Exception:
+        continue
+print(out, end="")
+r.destroy()
+PY
+)"
+        # Native-Wayland VS Code writes the Wayland primary selection instead
+        # of the X11 one; wl-paste reads that side when tkinter comes back
+        # empty (tkinter is an X11 client and only sees the XWayland bridge).
+        if [ -z "${sel//[[:space:]]/}" ] && command -v wl-paste >/dev/null 2>&1; then
+            sel="$(wl-paste --primary --no-newline 2>/dev/null)"
+        fi
+        if [ -z "${sel//[[:space:]]/}" ]; then
+            echo "nothing is highlighted right now (select some text first)"
+            exit 1
+        fi
+        tts_load_config
+        tts_apply_runtime_overrides
+        printf '%s' "$sel" | tts_clean | tts_speak_stream
         ;;
     stop)
         # Stop any read-out from the standalone player path (say / last / file /
