@@ -4,10 +4,10 @@ argument-hint: [--with-code | --raw]
 allowed-tools: Bash(~/.claude/plugins/claude-code-tts/bin/tts-ctl:*)
 ---
 
-Run this exact command and nothing else:
+The read-out already started before you were invoked. Command output:
 
-```
-~/.claude/plugins/claude-code-tts/bin/tts-ctl last $ARGUMENTS
-```
+!`~/.claude/plugins/claude-code-tts/bin/tts-ctl "last $ARGUMENTS"`
 
-Then tell the user in one short sentence that the last response is being read aloud. Do not take any other action.
+Reply with one short sentence telling the user the last response is being read
+aloud (or what went wrong, based on the output above). Do not run any tools
+and take no other action.

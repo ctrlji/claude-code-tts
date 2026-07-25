@@ -3,10 +3,9 @@ description: Auto-speak only the first sentence of each Claude response
 allowed-tools: Bash(~/.claude/plugins/claude-code-tts/bin/tts-ctl:*)
 ---
 
-Run this exact command and nothing else:
+The mode change already applied before you were invoked. Command output:
 
-```
-~/.claude/plugins/claude-code-tts/bin/tts-ctl mode sentence
-```
+!`~/.claude/plugins/claude-code-tts/bin/tts-ctl mode sentence`
 
-Then tell the user in one short sentence that only the first sentence will be spoken. Do not take any other action.
+Reply with one short sentence telling the user that only the first sentence of
+each response will be spoken. Do not run any tools and take no other action.

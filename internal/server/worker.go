@@ -123,29 +123,47 @@ func (wp *WorkerPool) processJob(job *Job) {
 		return
 	}
 
-	// Synthesize audio
+	// Synthesize and play. When the provider can stream (for example, Kokoro),
+	// begin playback as audio arrives so the first sound is heard sooner;
+	// otherwise fall back to synthesizing the whole clip, then playing it.
 	logging.Debug("Job %s: calling %s TTS API...", job.ID, synth.Name())
-	audioData, err := synth.Synthesize(job.Text, job.Voice)
-	if err != nil {
-		job.mu.Lock()
-		job.Status = "failed"
-		job.Error = err.Error()
-		job.mu.Unlock()
-		wp.failed.Add(1)
-		logging.Error("Job %s: TTS synthesis failed after %v: %v", job.ID, time.Since(startTime), err)
-		return
+	var playErr error
+	if streamer, ok := synth.(tts.StreamSynthesizer); ok {
+		stream, err := streamer.SynthesizeStream(job.Text, job.Voice)
+		if err != nil {
+			job.mu.Lock()
+			job.Status = "failed"
+			job.Error = err.Error()
+			job.mu.Unlock()
+			wp.failed.Add(1)
+			logging.Error("Job %s: TTS synthesis failed after %v: %v", job.ID, time.Since(startTime), err)
+			return
+		}
+		logging.Debug("Job %s: streaming audio playback...", job.ID)
+		playErr = wp.audioPlayer.PlayStream(stream)
+		stream.Close()
+	} else {
+		audioData, err := synth.Synthesize(job.Text, job.Voice)
+		if err != nil {
+			job.mu.Lock()
+			job.Status = "failed"
+			job.Error = err.Error()
+			job.mu.Unlock()
+			wp.failed.Add(1)
+			logging.Error("Job %s: TTS synthesis failed after %v: %v", job.ID, time.Since(startTime), err)
+			return
+		}
+		logging.Debug("Job %s: received %d bytes of audio", job.ID, len(audioData))
+		logging.Debug("Job %s: starting audio playback...", job.ID)
+		playErr = wp.audioPlayer.Play(audioData)
 	}
-	logging.Debug("Job %s: received %d bytes of audio", job.ID, len(audioData))
-
-	// Play audio (mutex protected - only one plays at a time)
-	logging.Debug("Job %s: starting audio playback...", job.ID)
-	if err := wp.audioPlayer.Play(audioData); err != nil {
+	if playErr != nil {
 		job.mu.Lock()
 		job.Status = "failed"
-		job.Error = err.Error()
+		job.Error = playErr.Error()
 		job.mu.Unlock()
 		wp.failed.Add(1)
-		logging.Error("Job %s: playback failed after %v: %v", job.ID, time.Since(startTime), err)
+		logging.Error("Job %s: playback failed after %v: %v", job.ID, time.Since(startTime), playErr)
 		return
 	}
 

@@ -21,6 +21,14 @@ func TestNewProvider(t *testing.T) {
 		t.Errorf("expected name %q, got %q", ProviderElevenLabs, elevenlabs.Name())
 	}
 
+	kokoro, err := NewProvider(ProviderKokoro)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if kokoro.Name() != ProviderKokoro {
+		t.Errorf("expected name %q, got %q", ProviderKokoro, kokoro.Name())
+	}
+
 	if _, err := NewProvider("unknown"); err == nil {
 		t.Error("expected error for unknown provider")
 	}
@@ -29,8 +37,8 @@ func TestNewProvider(t *testing.T) {
 func TestNewProviders(t *testing.T) {
 	providers := NewProviders()
 
-	if len(providers) != 2 {
-		t.Errorf("expected 2 providers, got %d", len(providers))
+	if len(providers) != 3 {
+		t.Errorf("expected 3 providers, got %d", len(providers))
 	}
 	for _, name := range ProviderNames() {
 		synth, ok := providers[name]
@@ -54,6 +62,7 @@ func TestDefaultProviderName(t *testing.T) {
 	}{
 		{"explicit openai", "openai", "", "", ProviderOpenAI},
 		{"explicit elevenlabs", "elevenlabs", "sk-x", "", ProviderElevenLabs},
+		{"explicit kokoro (keyless, opt-in)", "kokoro", "", "", ProviderKokoro},
 		{"invalid TTS_PROVIDER falls back to keys", "bogus", "", "el-x", ProviderElevenLabs},
 		{"openai key only", "", "sk-x", "", ProviderOpenAI},
 		{"elevenlabs key only", "", "", "el-x", ProviderElevenLabs},

@@ -11,12 +11,24 @@
 # this file, so you can override a knob for one run without editing anything.
 
 # --- Provider credentials -----------------------------------------------------
-# At least one key is required. You can keep keys here or in the plugin's .env.
+# You need one usable provider. OpenAI and ElevenLabs need an API key. Kokoro
+# runs locally and needs no key (see the Kokoro section below), so a Kokoro-only
+# setup can leave both of these blank. You can keep keys here or in the .env.
 ELEVENLABS_API_KEY=""
 OPENAI_API_KEY=""
 
-# Which provider to use by default: openai or elevenlabs.
+# Which provider to use by default: openai, elevenlabs, or kokoro.
 TTS_PROVIDER="elevenlabs"
+
+# --- Kokoro (free, offline provider) ------------------------------------------
+# Kokoro is an open-weight model that runs on your own machine, so it has no API
+# key and no per-use cost. It is opt-in: it is only used when TTS_PROVIDER=kokoro
+# (or you pass provider=kokoro on a request). Run a local Kokoro-FastAPI server,
+# for example:  docker run -p 8880:8880 ghcr.io/remsky/kokoro-fastapi-cpu:latest
+#
+# Root address of that server. The plugin appends /v1/audio/speech itself.
+# Leave unset to use the default shown here.
+# KOKORO_BASE_URL="http://localhost:8880"
 
 # --- Automatic speaking (the Stop hook) ---------------------------------------
 # How much of each Claude response to speak automatically:
@@ -36,7 +48,8 @@ TTS_STRIP_CODE="1"
 TTS_STRIP_MARKDOWN="1"
 
 # Voice override. Leave blank to use the provider's default. For ElevenLabs this
-# is a voice name from your account or a raw voice ID.
+# is a voice name from your account or a raw voice ID. For Kokoro it is a voice
+# name such as af_bella, af_heart, or am_michael (default af_bella).
 # TTS_VOICE="Aria"
 
 # Playback speed. 1.0 = normal. Range 0.5 (half) to 2.0 (double); pitch is

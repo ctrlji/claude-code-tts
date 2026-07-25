@@ -16,8 +16,8 @@ func TestNewWorkerPool(t *testing.T) {
 	if wp.queueSize != 100 {
 		t.Errorf("expected queueSize 100, got %d", wp.queueSize)
 	}
-	if len(wp.providers) != 2 {
-		t.Errorf("expected 2 providers to be registered, got %d", len(wp.providers))
+	if len(wp.providers) != 3 {
+		t.Errorf("expected 3 providers to be registered, got %d", len(wp.providers))
 	}
 	if wp.audioPlayer == nil {
 		t.Error("expected audioPlayer to be initialized")
@@ -55,7 +55,7 @@ func TestWorkerPool_ProviderNames(t *testing.T) {
 	wp := NewWorkerPool(1, 10)
 
 	names := wp.ProviderNames()
-	expected := []string{"elevenlabs", "openai"} // sorted
+	expected := []string{"elevenlabs", "kokoro", "openai"} // sorted
 	if len(names) != len(expected) {
 		t.Fatalf("expected %d provider names, got %d", len(expected), len(names))
 	}
@@ -243,8 +243,8 @@ func TestWorkerPool_GetStatus(t *testing.T) {
 	if status.IsPlaying {
 		t.Error("expected IsPlaying to be false")
 	}
-	if len(status.Providers) != 2 {
-		t.Errorf("expected 2 providers in status, got %d", len(status.Providers))
+	if len(status.Providers) != 3 {
+		t.Errorf("expected 3 providers in status, got %d", len(status.Providers))
 	}
 	if len(status.RecentJobs) != 1 {
 		t.Errorf("expected 1 recent job, got %d", len(status.RecentJobs))
@@ -393,8 +393,8 @@ func TestNewWorkerPool_TableDriven(t *testing.T) {
 			if wp.queueSize != tt.queueSize {
 				t.Errorf("expected queueSize %d, got %d", tt.queueSize, wp.queueSize)
 			}
-			if len(wp.providers) != 2 {
-				t.Errorf("expected 2 providers to be registered, got %d", len(wp.providers))
+			if len(wp.providers) != 3 {
+				t.Errorf("expected 3 providers to be registered, got %d", len(wp.providers))
 			}
 			if wp.audioPlayer == nil {
 				t.Error("expected audioPlayer to be initialized")

@@ -3,10 +3,9 @@ description: Turn off automatic speaking (you can still use /tts-last and /tts f
 allowed-tools: Bash(~/.claude/plugins/claude-code-tts/bin/tts-ctl:*)
 ---
 
-Run this exact command and nothing else:
+The mode change already applied before you were invoked. Command output:
 
-```
-~/.claude/plugins/claude-code-tts/bin/tts-ctl mode off
-```
+!`~/.claude/plugins/claude-code-tts/bin/tts-ctl mode off`
 
-Then tell the user in one short sentence that automatic speaking is off. Do not take any other action.
+Reply with one short sentence telling the user that automatic speaking is off.
+Do not run any tools and take no other action.

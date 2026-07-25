@@ -62,10 +62,10 @@ func (s *Server) registerTools() {
 			mcp.Description("The text to convert to speech (max 4096 characters)"),
 		),
 		mcp.WithString("provider",
-			mcp.Description("TTS provider: openai or elevenlabs (default: based on TTS_PROVIDER env var and configured API keys)"),
+			mcp.Description("TTS provider: openai, elevenlabs, or kokoro (default: based on TTS_PROVIDER env var and configured API keys)"),
 		),
 		mcp.WithString("voice",
-			mcp.Description("Voice to use. OpenAI: alloy, echo, fable, onyx, nova, shimmer (default: alloy). ElevenLabs: a voice name from your account or a raw voice ID (default: your account's first voice, or Aria)."),
+			mcp.Description("Voice to use. OpenAI: alloy, echo, fable, onyx, nova, shimmer (default: alloy). ElevenLabs: a voice name from your account or a raw voice ID (default: your account's first voice, or Aria). Kokoro: a Kokoro voice such as af_bella, af_heart, or am_michael (default: af_bella)."),
 		),
 	)
 

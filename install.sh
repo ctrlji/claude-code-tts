@@ -27,10 +27,12 @@ fi
 
 # Check for a TTS provider API key
 if [ -z "$OPENAI_API_KEY" ] && [ -z "$ELEVENLABS_API_KEY" ]; then
-    echo "Warning: no TTS provider API key is set."
-    echo "Set at least one before using the plugin:"
+    echo "Warning: no cloud TTS provider API key is set."
+    echo "Set one of these before using OpenAI or ElevenLabs:"
     echo "  export OPENAI_API_KEY=\"sk-...\""
     echo "  export ELEVENLABS_API_KEY=\"...\""
+    echo "Or use Kokoro, which is free and needs no key (export TTS_PROVIDER=kokoro"
+    echo "and run a local Kokoro server; see the README's Kokoro section)."
     echo ""
 fi
 
@@ -59,7 +61,7 @@ echo ""
 echo "Installation complete!"
 echo ""
 echo "Next steps:"
-echo "  1. Ensure OPENAI_API_KEY and/or ELEVENLABS_API_KEY is set in your environment"
+echo "  1. Set up a provider: OPENAI_API_KEY and/or ELEVENLABS_API_KEY, or free keyless Kokoro (TTS_PROVIDER=kokoro + a local Kokoro server)"
 echo "  2. Add the MCP server to Claude Code:"
 echo "     claude mcp add tts $INSTALL_DIR/bin/tts-server"
 echo ""

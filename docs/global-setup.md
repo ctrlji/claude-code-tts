@@ -6,15 +6,17 @@ It is aimed at Linux users who run Claude Code as the VS Code extension (the cha
 
 ## How provider selection works
 
-The plugin supports two text-to-speech providers: **OpenAI** and **ElevenLabs**. Each `speak` call decides which one to use in this order:
+The plugin supports three text-to-speech providers: **OpenAI**, **ElevenLabs**, and **Kokoro**. OpenAI and ElevenLabs are cloud services that need an API key. Kokoro is different: it is a free, open-weight model that runs on your own machine through a small local server, so it needs no key and costs nothing per request. Each `speak` call decides which provider to use in this order:
 
-1. If the call sets the `provider` parameter (`openai` or `elevenlabs`), that wins.
+1. If the call sets the `provider` parameter (`openai`, `elevenlabs`, or `kokoro`), that wins.
 2. Otherwise, if the `TTS_PROVIDER` environment variable is set to a valid provider, that is the default.
 3. Otherwise, the default is whichever API key is present, preferring OpenAI when both are set.
 
-So you set a sensible default once, and override it per request when you want the other provider. You never have to restart anything to switch.
+So you set a sensible default once, and override it per request when you want another provider. You never have to restart anything to switch.
 
-The API keys come from environment variables: `OPENAI_API_KEY` for OpenAI, and `ELEVENLABS_API_KEY` for ElevenLabs. The server starts as long as at least one of them is set.
+Kokoro is the one exception to step 3: it has no API key to detect, so it is never picked automatically. You opt into it explicitly, either by setting `TTS_PROVIDER=kokoro` or by passing `provider=kokoro` on a single call.
+
+The cloud API keys come from environment variables: `OPENAI_API_KEY` for OpenAI, and `ELEVENLABS_API_KEY` for ElevenLabs. The server starts as long as at least one provider is usable — one of those keys is set, or Kokoro is enabled (`TTS_PROVIDER=kokoro`, or `KOKORO_BASE_URL` points at a running server). For Kokoro setup, see [the Kokoro section in the README](../README.md#free-offline-tts-with-kokoro).
 
 ## Step 1 — Make your API keys available to every app and session
 
