@@ -140,3 +140,136 @@ func TestFindLatestTranscriptNoSessions(t *testing.T) {
 		t.Fatal("expected an error when the project has no transcripts")
 	}
 }
+
+func TestParseTranscriptSkipsIDEAndCompactNoise(t *testing.T) {
+	content := `{"type":"user","message":{"role":"user","content":"<ide_opened_file>The user opened foo.go</ide_opened_file>"}}
+{"type":"user","message":{"role":"user","content":"<ide_selection>some selected code</ide_selection>"}}
+{"type":"user","isCompactSummary":true,"message":{"role":"user","content":"This session is being continued from a previous conversation..."}}
+{"type":"user","message":{"role":"user","content":"<task-notification>\n<task-id>abc123</task-id>\n<status>completed</status>\n</task-notification>"}}
+{"type":"user","message":{"role":"user","content":"<local-command-stderr>Error: something broke</local-command-stderr>"}}
+{"type":"user","message":{"role":"user","content":"[Request interrupted by user]"}}
+{"type":"user","message":{"role":"user","content":"A real question."}}
+`
+	msgs, err := ParseTranscript(writeTranscript(t, content))
+	if err != nil {
+		t.Fatalf("ParseTranscript: %v", err)
+	}
+	if len(msgs) != 1 || msgs[0].Text != "A real question." {
+		t.Fatalf("expected only the real question, got %+v", msgs)
+	}
+}
+
+func TestSessionMetaTitleAndCwd(t *testing.T) {
+	content := `{"type":"queue-operation","operation":"enqueue","cwd":"/home/user/projects/demo"}
+{"type":"ai-title","aiTitle":"First title","sessionId":"abc"}
+{"type":"user","message":{"role":"user","content":"Hello."},"cwd":"/home/user/projects/demo"}
+{"type":"ai-title","aiTitle":"Refined title","sessionId":"abc"}
+`
+	path := writeTranscript(t, content)
+	title, cwd := SessionMeta(path)
+	if title != "Refined title" {
+		t.Errorf("title = %q, want the LAST ai-title", title)
+	}
+	if cwd != "/home/user/projects/demo" {
+		t.Errorf("cwd = %q, want /home/user/projects/demo", cwd)
+	}
+}
+
+func TestSessionMetaFallsBackToFirstPrompt(t *testing.T) {
+	content := `{"type":"mode","mode":"normal"}
+{"type":"user","message":{"role":"user","content":"<command-name>/tts</command-name>"}}
+{"type":"user","message":{"role":"user","content":"Please fix the flaky test in the reader package."}}
+`
+	title, _ := SessionMeta(writeTranscript(t, content))
+	if title != "Please fix the flaky test in the reader package." {
+		t.Errorf("title = %q, want the first real prompt", title)
+	}
+}
+
+func TestSessionMetaCacheRefreshesOnChange(t *testing.T) {
+	path := writeTranscript(t, `{"type":"ai-title","aiTitle":"Old","sessionId":"x"}`+"\n")
+	if title, _ := SessionMeta(path); title != "Old" {
+		t.Fatalf("title = %q, want Old", title)
+	}
+	newer := `{"type":"ai-title","aiTitle":"Old","sessionId":"x"}
+{"type":"ai-title","aiTitle":"New","sessionId":"x"}
+`
+	if err := os.WriteFile(path, []byte(newer), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// The mtime may not tick between the two writes on coarse filesystems,
+	// but the size did, and the cache keys on both.
+	if title, _ := SessionMeta(path); title != "New" {
+		t.Fatalf("title after change = %q, want New", title)
+	}
+}
+
+func TestListProjectsIn(t *testing.T) {
+	root := t.TempDir()
+	projDir := filepath.Join(root, "-home-user-projects-demo")
+	if err := os.MkdirAll(filepath.Join(projDir, "subdir"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	older := filepath.Join(projDir, "aaa.jsonl")
+	newer := filepath.Join(projDir, "bbb.jsonl")
+	olderContent := `{"type":"user","message":{"role":"user","content":"Old session prompt."},"cwd":"/home/user/projects/demo"}` + "\n"
+	newerContent := `{"type":"ai-title","aiTitle":"Newer session","sessionId":"bbb"}
+{"type":"user","message":{"role":"user","content":"hi"},"cwd":"/home/user/projects/demo"}
+`
+	if err := os.WriteFile(older, []byte(olderContent), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(newer, []byte(newerContent), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	past := time.Now().Add(-1 * time.Hour)
+	if err := os.Chtimes(older, past, past); err != nil {
+		t.Fatal(err)
+	}
+
+	projects, err := listProjectsIn(root)
+	if err != nil {
+		t.Fatalf("listProjectsIn: %v", err)
+	}
+	if len(projects) != 1 {
+		t.Fatalf("got %d projects, want 1: %+v", len(projects), projects)
+	}
+	p := projects[0]
+	if p.Name != "demo" || p.Dir != "/home/user/projects/demo" {
+		t.Errorf("project name/dir = %q/%q, want demo//home/user/projects/demo", p.Name, p.Dir)
+	}
+	if len(p.Sessions) != 2 {
+		t.Fatalf("got %d sessions, want 2", len(p.Sessions))
+	}
+	if p.Sessions[0].ID != "bbb" || p.Sessions[1].ID != "aaa" {
+		t.Errorf("sessions not newest-first: %+v", p.Sessions)
+	}
+	if p.Sessions[0].Title != "Newer session" {
+		t.Errorf("newest session title = %q", p.Sessions[0].Title)
+	}
+	if p.Sessions[1].Title != "Old session prompt." {
+		t.Errorf("older session title = %q (want the first-prompt fallback)", p.Sessions[1].Title)
+	}
+}
+
+func TestFindTranscriptByIDIn(t *testing.T) {
+	root := t.TempDir()
+	dir := filepath.Join(root, "-proj")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	want := filepath.Join(dir, "xyz.jsonl")
+	if err := os.WriteFile(want, []byte("{}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	got, err := findTranscriptByIDIn(root, "xyz")
+	if err != nil {
+		t.Fatalf("findTranscriptByIDIn: %v", err)
+	}
+	if got != want {
+		t.Fatalf("got %q, want %q", got, want)
+	}
+	if _, err := findTranscriptByIDIn(root, "missing"); err == nil {
+		t.Fatal("expected an error for an unknown id")
+	}
+}

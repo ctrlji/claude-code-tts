@@ -18,7 +18,7 @@ A Text-to-Speech MCP server plugin for Claude Code that converts text to speech 
 - **Mutex-Protected Playback**: One audio plays at a time, no overlapping
 - **Cross-Platform**: macOS (afplay), Linux (mpv/ffplay/mpg123), Windows (PowerShell)
 - **Standalone CLI**: `speak-text` binary for direct TTS without MCP
-- **Read-Along View**: `/tts-read` opens the conversation in a browser page that reads it aloud and highlights each sentence and word as it is spoken; select any text and read just that part from the right-click menu
+- **Read-Along View**: `/tts-read` opens the conversation in a browser page that reads it aloud and highlights each sentence and word as it is spoken; select any text and read just that part from the right-click menu. Each session gets its own tab, titled `project — session title`, and a built-in navigator lists every project and session on the machine
 
 ## Quick Install
 
@@ -292,7 +292,8 @@ Editing the config file is fine for your defaults, but for quick changes during 
 | `/tts selection` | Speak the text currently highlighted in any window (see below) |
 | `/tts stop` | Stop any read-out that is currently playing |
 | `/tts speed RATE` | Set playback speed, `0.5`–`2.0` (`default` for normal); pitch is preserved |
-| `/tts voice NAME` | Change the voice (or `default` to clear it) |
+| `/tts provider openai\|elevenlabs\|kokoro` | Switch the TTS provider |
+| `/tts voice NAME` | Change the voice (or `default` to clear it); voice names are provider-specific |
 | `/tts code include\|exclude` | Read code blocks aloud, or skip them |
 | `/tts markdown keep\|strip` | Keep Markdown markup, or strip it for cleaner speech |
 | `/tts cap N\|none` | Limit the number of spoken characters |
@@ -389,7 +390,9 @@ Notes on how it works:
 - Code blocks are shown but skipped during continuous reading. To hear code, select it and use **Read selection**.
 - `/tts stop` (or `tts-ctl stop`, or the Ctrl+Alt+X hotkey) also silences every open read-along page, not just the native player: page audio lives in the browser where process kills cannot reach, so the reader server relays the stop to all connected pages over its live event stream.
 - The page is served on `127.0.0.1` only (default port `8898`, changeable with `TTS_READER_PORT`). Requests from other machines or foreign web pages are rejected.
-- Running `/tts-read` again reuses the already-open reader instead of starting a second one. Pass a path (`/tts-read ~/.claude/projects/<project>/<session>.jsonl`) to read a different or older session.
+- One reader server handles any number of sessions. Every session has its own page URL (`/?s=<session-id>`), so running `/tts-read` in another project opens another tab instead of hijacking the one you already have. Each page titles itself `project — session title`, which is what its tab shows.
+- Opening the page without a session id (just `http://127.0.0.1:8898/`, or the **☰ Sessions** link in the top bar) shows the **navigator**: every Claude Code project on the machine with its sessions, newest first, each a link into the read-along view. Old sessions work the same as live ones.
+- Running `/tts-read` again reuses the already-open reader server instead of starting a second one. Pass a path (`/tts-read ~/.claude/projects/<project>/<session>.jsonl`) to read a specific transcript file directly.
 - VS Code offers no command-line way to run a workbench command in an already-running window, so a plain shell cannot open the Simple Browser by itself. Without the companion extension (next section) the printed link is a one-click open; with it, the open is fully automatic.
 
 ### The companion VS Code extension (right-click in the real chat + zero-click opens)
@@ -397,9 +400,11 @@ Notes on how it works:
 `make install-vscode-ext` installs a tiny local extension, `claude-code-tts-bridge` (about sixty lines, no marketplace, no network). It adds two things that are impossible from outside the editor:
 
 - **"Read selection aloud (TTS)" in the right-click menu of the actual Claude Code chat panel.** VS Code lets an extension contribute items to another extension's webview menu (the `webview/context` contribution point, scoped to the Claude panel's view IDs). The menu API does not expose the selected text, so on Linux the command reads the X11 primary selection — which your highlight already filled. The same menu item appears in normal editors too, where the selection comes straight from the editor API (so that path also works on Wayland and macOS).
-- **Zero-click `/tts-read`.** The extension watches `~/.claude/plugins/claude-code-tts/reader.open`; the `tts-read` launcher writes the page URL there when it runs inside VS Code, and the extension opens the read-along view as an editor tab. This is a file-based bridge in the style of Talon's command-server: protected by ordinary filesystem permissions, with no localhost command socket that other processes or web pages could poke.
+- **Zero-click `/tts-read`.** The extension watches `~/.claude/plugins/claude-code-tts/reader.open`; the `tts-read` launcher writes the page URL and its project directory there when it runs inside VS Code, and the extension opens the read-along view as an editor tab. This is a file-based bridge in the style of Talon's command-server: protected by ordinary filesystem permissions, with no localhost command socket that other processes or web pages could poke. The extension runs in every open VS Code window, so the flag names the project directory and **only the window that has that project open consumes it** — the tab appears where you are working, not in whichever window happened to poll first. If no open window has the project, any window takes the flag after a few seconds so the view still appears.
 
-Reload the VS Code window once after installing. A "Stop TTS read-out" item is included in the chat panel's menu as well.
+The view opens in the extension's own editor tab (a thin wrapper around the local reader page), not in VS Code's Simple Browser. The difference is the tab title: Simple Browser tabs are hard-wired to say "Simple Browser", while the extension's tab carries the session's real name — `project — session title` — and renames itself when the session title evolves. With several sessions open you can tell the tabs apart at a glance. Clicking a printed reader link by hand still goes through the Simple Browser rule above, so both paths work.
+
+Reload the VS Code window once after installing (and after updating the extension). A "Stop TTS read-out" item is included in the chat panel's menu as well.
 
 ### Read the real chat panel: highlight + hotkey (Linux/X11)
 

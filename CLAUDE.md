@@ -81,11 +81,24 @@ make install            # Installs to ~/.claude/plugins/claude-code-tts/
 │    Read-along view (launched by `tts-ctl read` / /tts-read) │
 │      - transcript.go: parses the session's JSONL transcript │
 │        into visible chat turns (skips tool calls, thinking, │
-│        meta lines, sidechains, command noise)               │
+│        meta lines, sidechains, command/IDE noise, task      │
+│        notifications, interrupt markers, compact            │
+│        summaries); also enumerates ~/.claude/projects for   │
+│        the navigator and extracts per-session titles (last  │
+│        "ai-title" line, from bounded head/tail reads) and   │
+│        the real project path (first "cwd" field — the dir   │
+│        names under ~/.claude/projects are munged lossily)   │
 │      - server.go: loopback-only HTTP server with embedded   │
 │        web page (assets/), /api/tts synthesis endpoint,     │
 │        SSE live updates as the transcript grows, and        │
 │        single-instance reuse via /api/health + /api/load    │
+│      - MULTI-SESSION: one server, many sessions. Each page  │
+│        binds to a session via its /?s=<session-id> URL;     │
+│        /api/load registers sessions (never repoints open    │
+│        pages), SSE change events carry the session id, and  │
+│        pages title themselves "project — session title".    │
+│        A URL with no session id serves the navigator        │
+│        (every project + session, via /api/sessions)         │
 │      - The BROWSER plays the audio here (not player.go) so  │
 │        the page can highlight each sentence/word in sync;   │
 │        sentence timing is exact (one clip per sentence),    │
@@ -94,7 +107,15 @@ make install            # Installs to ~/.claude/plugins/claude-code-tts/
 │        browser: it prints a clickable URL that opens as a   │
 │        Simple Browser editor tab via the user's             │
 │        workbench.externalUriOpeners rule (see README).      │
-│        --browser forces the system browser anywhere         │
+│        --browser forces the system browser anywhere.        │
+│        The bridge extension (vscode-extension/) instead     │
+│        opens its own webview tab wrapping the page, because │
+│        only an owned tab can carry a real title; the flag   │
+│        file lists the project dir so only the VS Code       │
+│        window with that project open consumes it (the       │
+│        extension polls in EVERY window — unscoped, the      │
+│        first poller wins and the tab lands in the wrong     │
+│        window)                                              │
 │                                                             │
 │  scripts/tts-ctl `selection` (X11 only)                     │
 │    Speaks the text currently highlighted in ANY window,     │

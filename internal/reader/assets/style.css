@@ -12,6 +12,13 @@
   --sent-hl: #ffe9a8;
   --word-hl: #ffc53d;
   --shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
+  --tok-com: #6a737d;
+  --tok-str: #22863a;
+  --tok-kw: #d73a49;
+  --tok-num: #005cc5;
+  --tok-add: #22863a;
+  --tok-del: #cb2431;
+  --tok-hunk: #6f42c1;
 }
 @media (prefers-color-scheme: dark) {
   :root {
@@ -26,6 +33,13 @@
     --sent-hl: #4a3f14;
     --word-hl: #8a6d1a;
     --shadow: 0 1px 3px rgba(0, 0, 0, 0.4);
+    --tok-com: #8b949e;
+    --tok-str: #7ee787;
+    --tok-kw: #ff7b72;
+    --tok-num: #79c0ff;
+    --tok-add: #7ee787;
+    --tok-del: #ffa198;
+    --tok-hunk: #d2a8ff;
   }
 }
 
@@ -101,23 +115,39 @@ button.primary { background: var(--accent); border-color: var(--accent); color: 
 .message .li::before { content: "• "; color: var(--muted); }
 .message .li.num::before { content: none; }
 
-pre.code {
-  position: relative;
-  background: var(--code-bg);
+.codeblock {
   border: 1px solid var(--border); border-radius: 8px;
+  margin: 0.6rem 0;
+  overflow: hidden;
+  background: var(--code-bg);
+}
+.code-head {
+  display: flex; align-items: center; gap: 0.7rem;
+  padding: 0.25rem 0.7rem;
+  border-bottom: 1px solid var(--border);
+  font-size: 0.7rem; color: var(--muted);
+  background: var(--panel);
+}
+.code-lang { font-weight: 700; letter-spacing: 0.05em; text-transform: uppercase; }
+.code-copy {
+  margin-left: auto;
+  font-size: 0.7rem; padding: 0.05rem 0.5rem; border-radius: 5px;
+}
+pre.code {
+  background: var(--code-bg);
+  margin: 0;
   padding: 0.6rem 0.8rem;
   overflow-x: auto;
   font: 0.85rem/1.5 ui-monospace, "Cascadia Code", Menlo, Consolas, monospace;
   white-space: pre;
 }
-pre.code::after {
-  content: "code — not read aloud";
-  position: absolute; top: 0.3rem; right: 0.55rem;
-  font: 0.65rem/1 system-ui, sans-serif; color: var(--muted);
-  opacity: 0; transition: opacity 0.15s;
-  pointer-events: none;
-}
-pre.code:hover::after { opacity: 1; }
+.tok-com { color: var(--tok-com); font-style: italic; }
+.tok-str { color: var(--tok-str); }
+.tok-kw { color: var(--tok-kw); }
+.tok-num { color: var(--tok-num); }
+.tok-add { color: var(--tok-add); }
+.tok-del { color: var(--tok-del); }
+.tok-hunk { color: var(--tok-hunk); }
 
 /* ---- read-along highlights ---- */
 .sent { cursor: pointer; border-radius: 4px; transition: background-color 0.15s; }
@@ -160,6 +190,35 @@ pre.code:hover::after { opacity: 1; }
   font-size: 0.8rem;
   box-shadow: 0 3px 12px rgba(0, 0, 0, 0.25);
 }
+
+/* ---- session identity + navigator ---- */
+#nav-link {
+  color: var(--muted); text-decoration: none;
+  font-size: 0.85rem; white-space: nowrap;
+  border: 1px solid var(--border); border-radius: 6px;
+  padding: 0.1rem 0.45rem;
+}
+#nav-link:hover { border-color: var(--accent); color: var(--text); }
+#session-name {
+  color: var(--muted); font-size: 0.85rem;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  max-width: 30ch;
+}
+/* The navigator is the same page without a session id: playback controls and
+   the sessions link make no sense there and are hidden. */
+body.nav #topbar .controls { display: none; }
+body.nav #nav-link { display: none; }
+.nav-sessions { display: flex; flex-direction: column; gap: 0.1rem; margin-top: 0.4rem; }
+.nav-session {
+  display: flex; gap: 0.8rem; align-items: baseline;
+  padding: 0.35rem 0.5rem; border-radius: 8px;
+  color: var(--text); text-decoration: none;
+}
+.nav-session:hover { background: var(--bg); }
+.nav-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.nav-title.untitled { color: var(--muted); font-style: italic; }
+.nav-when { margin-left: auto; color: var(--muted); font-size: 0.78rem; white-space: nowrap; }
+.nav-project .time { overflow: hidden; text-overflow: ellipsis; }
 
 /* ---- toast + empty state ---- */
 #toast {

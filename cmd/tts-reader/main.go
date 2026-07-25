@@ -57,13 +57,15 @@ func main() {
 		fatal("transcript is not a readable file: %s", path)
 	}
 
-	// If a reader from this plugin is already running, hand it the transcript
-	// and reuse its page instead of starting a second server.
+	// If a reader from this plugin is already running, register the session
+	// with it and reuse the running server instead of starting a second one.
+	// Each session has its own page URL, so other open tabs are undisturbed.
 	if reader.ProbeInstance(*port) {
-		if err := reader.SwitchTranscript(*port, path); err != nil {
+		pageURL, err := reader.SwitchTranscript(*port, path)
+		if err != nil {
 			fatal("a reader already runs on port %d but did not accept the transcript: %v", *port, err)
 		}
-		finish(fmt.Sprintf("http://127.0.0.1:%d/", *port), *urlFile, *noOpen, *browser)
+		finish(pageURL, *urlFile, *noOpen, *browser)
 		return
 	}
 

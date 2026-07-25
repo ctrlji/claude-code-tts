@@ -1,6 +1,6 @@
 ---
 description: Control the text-to-speech experience — mode, voice, read the last response, read a file, and more
-argument-hint: mode full|sentence|off | last | file PATH | read [PATH] | say TEXT | selection | stop | speed RATE | voice NAME | code include|exclude | markdown keep|strip | cap N|none | show | reset
+argument-hint: mode full|sentence|off | last | file PATH | read [PATH] | say TEXT | selection | stop | speed RATE | provider NAME | voice NAME | code include|exclude | markdown keep|strip | cap N|none | show | reset
 allowed-tools: Bash(~/.claude/plugins/claude-code-tts/bin/tts-ctl:*)
 ---
 
@@ -19,7 +19,8 @@ For reference, the subcommands are:
 - `selection` — speak the text currently highlighted in any window (X11 primary selection; works on the Claude Code chat panel)
 - `stop` — stop any read-out currently in progress
 - `speed RATE` (0.5–2.0, or `default`) — set playback speed; pitch is preserved
-- `voice NAME` (or `default`) — change the voice
+- `provider openai|elevenlabs|kokoro` — switch the TTS provider
+- `voice NAME` (or `default`) — change the voice; voice names are provider-specific, so set one that the current provider knows
 - `code include|exclude` — read code blocks aloud, or skip them
 - `markdown keep|strip` — keep Markdown markup, or strip it for cleaner speech
 - `cap N|none` — limit spoken characters

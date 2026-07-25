@@ -40,15 +40,26 @@ const miniTranscript = `{"type":"user","message":{"role":"user","content":"Hello
 
 func newTestReader(t *testing.T, synth tts.Synthesizer) (*httptest.Server, string) {
 	t.Helper()
+	return newTestReaderWithRoot(t, synth, "")
+}
+
+func newTestReaderWithRoot(t *testing.T, synth tts.Synthesizer, projectsRoot string) (*httptest.Server, string) {
+	t.Helper()
 	path := filepath.Join(t.TempDir(), "session.jsonl")
 	if err := os.WriteFile(path, []byte(miniTranscript), 0o644); err != nil {
 		t.Fatal(err)
+	}
+	if projectsRoot == "" {
+		// Point session-id lookups at an empty root so tests never touch the
+		// real ~/.claude/projects.
+		projectsRoot = t.TempDir()
 	}
 	s := New(Options{
 		Transcript:      path,
 		Providers:       map[string]tts.Synthesizer{"fake": synth},
 		DefaultProvider: "fake",
 		Speed:           1.0,
+		ProjectsRoot:    projectsRoot,
 	})
 	ts := httptest.NewServer(s.Handler())
 	t.Cleanup(ts.Close)
@@ -181,14 +192,18 @@ func TestGuardRejectsForeignOriginAndHost(t *testing.T) {
 }
 
 func TestHealthAndLoad(t *testing.T) {
-	ts, _ := newTestReader(t, &fakeSynth{audio: []byte("MP3")})
+	ts, path := newTestReader(t, &fakeSynth{audio: []byte("MP3")})
 
 	var health struct {
-		App string `json:"app"`
+		App      string `json:"app"`
+		Sessions int    `json:"sessions"`
 	}
 	getJSON(t, ts.URL+"/api/health", &health)
 	if health.App != healthApp {
 		t.Fatalf("app = %q, want %q", health.App, healthApp)
+	}
+	if health.Sessions != 1 {
+		t.Errorf("sessions = %d, want 1", health.Sessions)
 	}
 
 	other := filepath.Join(t.TempDir(), "other.jsonl")
@@ -201,21 +216,38 @@ func TestHealthAndLoad(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	var loaded struct {
+		OK      bool   `json:"ok"`
+		Session string `json:"session"`
+		URL     string `json:"url"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&loaded); err != nil {
+		t.Fatal(err)
+	}
 	resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("load: status %d", resp.StatusCode)
 	}
+	if !loaded.OK || loaded.Session != "other" || loaded.URL != "/?s=other" {
+		t.Fatalf("load response = %+v, want ok/other//?s=other", loaded)
+	}
 
+	// The new session is readable through its own URL, and the first session
+	// keeps working through its URL — loading no longer repoints every page.
 	var got struct {
 		Transcript string    `json:"transcript"`
 		Messages   []Message `json:"messages"`
 	}
-	getJSON(t, ts.URL+"/api/messages", &got)
+	getJSON(t, ts.URL+"/api/messages?s=other", &got)
 	if got.Transcript != other {
-		t.Errorf("transcript after load = %q, want %q", got.Transcript, other)
+		t.Errorf("transcript for s=other = %q, want %q", got.Transcript, other)
 	}
 	if len(got.Messages) != 1 || got.Messages[0].Text != "Different session." {
-		t.Errorf("messages after load: %+v", got.Messages)
+		t.Errorf("messages for s=other: %+v", got.Messages)
+	}
+	getJSON(t, ts.URL+"/api/messages?s=session", &got)
+	if got.Transcript != path {
+		t.Errorf("transcript for s=session = %q, want %q", got.Transcript, path)
 	}
 
 	body, _ = json.Marshal(map[string]string{"path": filepath.Join(t.TempDir(), "missing.jsonl")})
@@ -226,6 +258,138 @@ func TestHealthAndLoad(t *testing.T) {
 	resp.Body.Close()
 	if resp.StatusCode != http.StatusBadRequest {
 		t.Errorf("load missing file: status %d, want 400", resp.StatusCode)
+	}
+}
+
+func TestMessagesCarryProjectAndTitle(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "abc.jsonl")
+	content := `{"type":"ai-title","aiTitle":"Fix the widget","sessionId":"abc"}
+{"type":"user","message":{"role":"user","content":"Hello."},"cwd":"/home/user/widgets"}
+`
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	s := New(Options{
+		Transcript:      path,
+		Providers:       map[string]tts.Synthesizer{"fake": &fakeSynth{audio: []byte("MP3")}},
+		DefaultProvider: "fake",
+		Speed:           1.0,
+	})
+	ts := httptest.NewServer(s.Handler())
+	t.Cleanup(ts.Close)
+
+	var got struct {
+		Session string `json:"session"`
+		Project string `json:"project"`
+		Title   string `json:"title"`
+	}
+	getJSON(t, ts.URL+"/api/messages?s=abc", &got)
+	if got.Session != "abc" || got.Project != "widgets" || got.Title != "Fix the widget" {
+		t.Fatalf("session/project/title = %q/%q/%q", got.Session, got.Project, got.Title)
+	}
+}
+
+func TestSessionResolvedFromProjectsRoot(t *testing.T) {
+	root := t.TempDir()
+	dir := filepath.Join(root, "-some-project")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	old := filepath.Join(dir, "old-session.jsonl")
+	if err := os.WriteFile(old, []byte(`{"type":"user","message":{"role":"user","content":"From the archive."}}`+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	ts, _ := newTestReaderWithRoot(t, &fakeSynth{audio: []byte("MP3")}, root)
+
+	// A session id the server never saw is found on disk and served.
+	var got struct {
+		Messages []Message `json:"messages"`
+	}
+	getJSON(t, ts.URL+"/api/messages?s=old-session", &got)
+	if len(got.Messages) != 1 || got.Messages[0].Text != "From the archive." {
+		t.Fatalf("lazy-resolved session: %+v", got.Messages)
+	}
+
+	// An unknown or malformed id is a clean 404, never a file probe outside
+	// the projects root.
+	for _, bad := range []string{"nope", "..%2F..%2Fetc%2Fpasswd", "a%2Fb"} {
+		resp, err := http.Get(ts.URL + "/api/messages?s=" + bad)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusNotFound {
+			t.Errorf("s=%s: status %d, want 404", bad, resp.StatusCode)
+		}
+	}
+
+	// Lazy resolution is read-only with respect to the fallback: a request
+	// without ?s= still resolves to the session the server started with.
+	var fallback struct {
+		Messages []Message `json:"messages"`
+	}
+	getJSON(t, ts.URL+"/api/messages", &fallback)
+	if len(fallback.Messages) == 0 || fallback.Messages[0].Text != "Hello." {
+		t.Errorf("fallback session flipped after a lazy lookup: %+v", fallback.Messages)
+	}
+}
+
+func TestLoadRepointsCollidingBasename(t *testing.T) {
+	ts, _ := newTestReader(t, &fakeSynth{audio: []byte("MP3")})
+
+	// A different file with the SAME basename as the running session: loading
+	// it must actually serve it, not silently keep the old file.
+	other := filepath.Join(t.TempDir(), "session.jsonl")
+	if err := os.WriteFile(other, []byte(`{"type":"user","message":{"role":"user","content":"The copied transcript."}}`+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	body, _ := json.Marshal(map[string]string{"path": other})
+	resp, err := http.Post(ts.URL+"/api/load", "application/json", bytes.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+
+	var got struct {
+		Transcript string    `json:"transcript"`
+		Messages   []Message `json:"messages"`
+	}
+	getJSON(t, ts.URL+"/api/messages?s=session", &got)
+	if got.Transcript != other {
+		t.Errorf("transcript = %q, want the newly loaded %q", got.Transcript, other)
+	}
+	if len(got.Messages) != 1 || got.Messages[0].Text != "The copied transcript." {
+		t.Errorf("messages = %+v", got.Messages)
+	}
+}
+
+func TestSessionsEndpoint(t *testing.T) {
+	root := t.TempDir()
+	dir := filepath.Join(root, "-home-user-demo")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	sess := filepath.Join(dir, "s1.jsonl")
+	content := `{"type":"ai-title","aiTitle":"Demo work","sessionId":"s1"}
+{"type":"user","message":{"role":"user","content":"hi"},"cwd":"/home/user/demo"}
+`
+	if err := os.WriteFile(sess, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	ts, _ := newTestReaderWithRoot(t, &fakeSynth{audio: []byte("MP3")}, root)
+
+	var got struct {
+		Projects []ProjectInfo `json:"projects"`
+	}
+	getJSON(t, ts.URL+"/api/sessions", &got)
+	if len(got.Projects) != 1 {
+		t.Fatalf("projects: %+v", got.Projects)
+	}
+	p := got.Projects[0]
+	if p.Name != "demo" || len(p.Sessions) != 1 || p.Sessions[0].ID != "s1" || p.Sessions[0].Title != "Demo work" {
+		t.Fatalf("unexpected listing: %+v", p)
 	}
 }
 

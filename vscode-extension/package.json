@@ -2,7 +2,7 @@
   "name": "claude-code-tts-bridge",
   "displayName": "Claude Code TTS Bridge",
   "description": "Companion extension for the claude-code-tts plugin: adds 'Read selection aloud' to the right-click menu of the Claude Code chat panel and editors, and opens the read-along view inside VS Code with zero clicks.",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "publisher": "claude-code-tts",
   "license": "MIT",
   "engines": {

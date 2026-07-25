@@ -28,11 +28,12 @@ usage() { grep -E '^#( |$)' "$0" | sed -E 's/^# ?//'; }
 
 args=()
 want_browser=0
+no_open=0
 for a in "$@"; do
     case "$a" in
         -h | --help) usage; exit 0 ;;
         --browser) args+=(-browser); want_browser=1 ;;
-        --no-open) args+=(-no-open) ;;
+        --no-open) args+=(-no-open); no_open=1 ;;
         *) args+=(-transcript "$a") ;;
     esac
 done
@@ -59,13 +60,21 @@ if [ ! -s "$url_file" ]; then
 fi
 
 url="$(cat "$url_file")"
-if [ "$want_browser" = 1 ]; then
+if [ "$no_open" = 1 ]; then
+    # --no-open means exactly that: no browser, and no flag for the VS Code
+    # extension either — just report where the page is.
+    echo "read-along view is ready at $url"
+elif [ "$want_browser" = 1 ]; then
     echo "read-along view opened in your web browser at $url"
 elif [ "${TERM_PROGRAM:-}" = "vscode" ] || [ -n "${VSCODE_PID:-}" ]; then
     # Ask the companion VS Code extension (claude-code-tts-bridge) to open the
     # view as an editor tab. It watches this flag file; without the extension
     # the flag is harmless and the printed link still works with one click.
-    printf '%s\n' "$url" > "$open_flag"
+    # Line 1 is the page URL. Line 2 is the project directory this command ran
+    # in: the extension runs in EVERY open VS Code window, and only the window
+    # that has this directory open consumes the flag — otherwise the tab would
+    # pop up in whichever window happened to poll first.
+    printf '%s\n%s\n' "$url" "${CLAUDE_PROJECT_DIR:-$PWD}" > "$open_flag"
     echo "read-along view is ready at $url — it should open inside VS Code (click the link if not)"
 else
     echo "read-along view opened at $url (a browser tab should appear)"

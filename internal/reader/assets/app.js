@@ -12,6 +12,40 @@
 const $ = (sel) => document.querySelector(sel);
 const messagesEl = $('#messages');
 
+// The page is bound to one session through the ?s=<id> parameter in its URL,
+// so several tabs can read several sessions from the same server. A URL with
+// no session id shows the navigator instead: every project on this machine
+// with its sessions, newest first.
+const SESSION = new URLSearchParams(location.search).get('s') || '';
+
+// api() stamps the session id onto a server call so the server knows which
+// transcript the request is about.
+function api(path) {
+  return SESSION ? path + '?s=' + encodeURIComponent(SESSION) : path;
+}
+
+// setPageTitle names this view everywhere a name is shown: the browser tab
+// via document.title, and — when the page runs inside the VS Code bridge
+// extension's editor tab (an iframe in a webview) — the tab label, which the
+// wrapper renames when it receives this message.
+function setPageTitle(title) {
+  document.title = title;
+  try {
+    if (window.parent !== window) window.parent.postMessage({ type: 'ttsread-title', title }, '*');
+  } catch (e) { /* sandboxed parent; the in-page name still shows */ }
+}
+
+// applyMeta labels the page as "<project> — <session title>" from the fields
+// the server adds to /api/messages. Titles grow with the session, so this
+// runs on every refresh, not just at boot.
+function applyMeta(data) {
+  const label = [data.project, data.title].filter(Boolean).join(' — ');
+  if (!label) return; // never clobber a good label with an empty one
+  setPageTitle(label);
+  $('#session-name').textContent = label;
+  $('#session-name').title = label;
+}
+
 const SPEEDS = [0.5, 0.75, 0.9, 1.0, 1.1, 1.25, 1.5, 1.75, 2.0];
 const MAX_SENTENCE_CHARS = 300; // one TTS request per sentence; keep them small
 const CACHE_MAX_CLIPS = 60;
@@ -162,15 +196,157 @@ function appendSentences(block, text) {
   });
 }
 
+/* ---------------- code blocks: header, copy, highlighting ---------------- */
+
+// Keyword sets for the languages that actually show up in Claude sessions.
+// The aim is readable color, not a full grammar: comments, strings, numbers,
+// and keywords cover most of what the eye scans for.
+const CODE_KEYWORDS = {
+  go: 'break case chan const continue default defer else fallthrough for func go goto if import interface map package range return select struct switch type var nil true false iota',
+  js: 'async await break case catch class const continue debugger default delete do else export extends finally for from function if import in instanceof interface let new of return static super switch this throw try type typeof var void while with yield null undefined true false',
+  python: 'and as assert async await break class continue def del elif else except finally for from global if import in is lambda match nonlocal not or pass raise return try while with yield None True False self',
+  bash: 'if then else elif fi for while until do done case esac function in select time echo exit return local export readonly shift source set unset trap sudo cd',
+  rust: 'as async await break const continue crate dyn else enum extern fn for if impl in let loop match mod move mut pub ref return self Self static struct super trait type unsafe use where while true false',
+  clike: 'auto break case catch class const continue default delete do else enum explicit extern final finally for goto if implements import instanceof int char float double long short signed unsigned bool void namespace new operator private protected public return sizeof static struct switch template this throw throws try typedef union using virtual volatile while null nullptr true false',
+  sql: 'select from where insert into update delete set values create table index view drop alter join left right inner outer on group by order having limit offset as and or not null in is distinct union all between like exists primary key foreign references default',
+  json: 'true false null',
+  yaml: 'true false null',
+};
+
+// codeLangDef maps a fence's info string to a highlighting definition:
+// which line/block comments exist and which keyword set applies.
+function codeLangDef(lang) {
+  const alias = {
+    javascript: 'js', typescript: 'js', ts: 'js', jsx: 'js', tsx: 'js', node: 'js',
+    sh: 'bash', shell: 'bash', zsh: 'bash', console: 'bash', makefile: 'bash', make: 'bash',
+    py: 'python', golang: 'go', yml: 'yaml', rs: 'rust',
+    c: 'clike', cpp: 'clike', 'c++': 'clike', h: 'clike', java: 'clike', cs: 'clike', kotlin: 'clike', swift: 'clike',
+  };
+  const l = alias[lang] || lang;
+  const defs = {
+    go: { line: '//', block: true, kw: CODE_KEYWORDS.go },
+    js: { line: '//', block: true, kw: CODE_KEYWORDS.js },
+    rust: { line: '//', block: true, kw: CODE_KEYWORDS.rust },
+    clike: { line: '//', block: true, kw: CODE_KEYWORDS.clike },
+    css: { line: null, block: true, kw: '' },
+    python: { line: '#', block: false, kw: CODE_KEYWORDS.python },
+    bash: { line: '#', block: false, kw: CODE_KEYWORDS.bash },
+    yaml: { line: '#', block: false, kw: CODE_KEYWORDS.yaml },
+    toml: { line: '#', block: false, kw: CODE_KEYWORDS.yaml },
+    json: { line: null, block: false, kw: CODE_KEYWORDS.json },
+    sql: { line: '--', block: true, kw: CODE_KEYWORDS.sql },
+    html: { line: null, block: false, kw: '', htmlComment: true },
+    xml: { line: null, block: false, kw: '', htmlComment: true },
+  };
+  return defs[l] || null;
+}
+
+// highlightDiff colors a diff/patch per line: additions, deletions, hunk
+// headers, and file headers.
+function highlightDiff(text) {
+  const frag = document.createDocumentFragment();
+  text.split('\n').forEach((line, i) => {
+    if (i) frag.append('\n');
+    let cls = '';
+    if (/^@@/.test(line)) cls = 'tok-hunk';
+    else if (/^(diff |index |--- |\+\+\+ )/.test(line)) cls = 'tok-com';
+    else if (/^\+/.test(line)) cls = 'tok-add';
+    else if (/^-/.test(line)) cls = 'tok-del';
+    if (cls) frag.append(el('span', cls, line));
+    else frag.append(line);
+  });
+  return frag;
+}
+
+// highlightCode tokenizes code into colored spans. Everything is built with
+// createElement/textContent — transcript content can never inject markup. An
+// unknown language comes back as plain text.
+function highlightCode(text, lang) {
+  if (lang === 'diff' || lang === 'patch') return highlightDiff(text);
+  const frag = document.createDocumentFragment();
+  const def = codeLangDef(lang);
+  if (!def) {
+    frag.append(text);
+    return frag;
+  }
+  const kw = new Set((def.kw || '').split(/\s+/).filter(Boolean));
+  // SQL is conventionally written in either case; its keyword set is stored
+  // lowercase, so fold tokens for the lookup.
+  const foldCase = def.kw === CODE_KEYWORDS.sql;
+  // Alternation order is the precedence: comments beat strings beat numbers
+  // beat words. Strings tolerate a missing closing quote so one typo does
+  // not discolor the rest of the block.
+  const parts = [];
+  if (def.htmlComment) parts.push('<!--[\\s\\S]*?(?:-->|$)');
+  if (def.block) parts.push('\\/\\*[\\s\\S]*?(?:\\*\\/|$)');
+  if (def.line === '//') parts.push('\\/\\/[^\\n]*');
+  if (def.line === '--') parts.push('--[^\\n]*');
+  if (def.line === '#') parts.push('#[^\\n]*');
+  parts.push('"(?:\\\\.|[^"\\\\\\n])*"?');
+  parts.push("'(?:\\\\.|[^'\\\\\\n])*'?");
+  parts.push('`(?:\\\\.|[^`\\\\])*`?');
+  parts.push('\\b\\d[\\w.]*\\b');
+  parts.push('[A-Za-z_$][\\w$]*');
+  const re = new RegExp(parts.join('|'), 'g');
+  let last = 0;
+  let m;
+  while ((m = re.exec(text))) {
+    if (m.index > last) frag.append(text.slice(last, m.index));
+    const tok = m[0];
+    const c = tok[0];
+    let cls = '';
+    if (tok.startsWith('/*') || tok.startsWith('<!--') ||
+        (def.line === '//' && tok.startsWith('//')) ||
+        (def.line === '--' && tok.startsWith('--')) ||
+        (def.line === '#' && c === '#')) cls = 'tok-com';
+    else if (c === '"' || c === "'" || c === '`') cls = 'tok-str';
+    else if (c >= '0' && c <= '9') cls = 'tok-num';
+    else if (kw.has(tok) || (foldCase && kw.has(tok.toLowerCase()))) cls = 'tok-kw';
+    if (cls) frag.append(el('span', cls, tok));
+    else frag.append(tok);
+    last = m.index + tok.length;
+  }
+  if (last < text.length) frag.append(text.slice(last));
+  return frag;
+}
+
+// renderCodeBlock builds the full code block: a header bar with the fence's
+// language, the "not read aloud" hint, and a copy button, above the
+// highlighted code itself. Continuous reading skips it because it contains
+// no sentence spans.
+function renderCodeBlock(text, lang) {
+  const wrap = el('div', 'codeblock');
+  const head = el('div', 'code-head');
+  head.append(el('span', 'code-lang', lang || 'code'));
+  head.append(el('span', 'code-note', 'not read aloud'));
+  const copyBtn = el('button', 'code-copy', 'Copy');
+  copyBtn.title = 'Copy this code block';
+  copyBtn.addEventListener('click', () => {
+    navigator.clipboard.writeText(text).then(
+      () => {
+        copyBtn.textContent = 'Copied ✓';
+        setTimeout(() => { copyBtn.textContent = 'Copy'; }, 1500);
+      },
+      () => toast('Could not copy — the clipboard is unavailable here')
+    );
+  });
+  head.append(copyBtn);
+  const pre = el('pre', 'code');
+  pre.append(highlightCode(text, (lang || '').toLowerCase()));
+  wrap.append(head, pre);
+  return wrap;
+}
+
 // renderBody converts one message's Markdown-ish text into readable blocks.
-// Fenced code becomes a <pre> that continuous reading skips; everything else
-// becomes paragraphs of clickable sentence spans. Built entirely with
-// createElement/textContent so transcript content can never inject markup.
+// Fenced code becomes a highlighted code block that continuous reading
+// skips; everything else becomes paragraphs of clickable sentence spans.
+// Built entirely with createElement/textContent so transcript content can
+// never inject markup.
 function renderBody(text) {
   const body = el('div', 'msg-body');
   const lines = text.split('\n');
   let para = [];
-  let code = null; // array of code lines while inside a fence
+  let code = null; // {lines, lang, fence} while inside a fence
 
   const flushPara = () => {
     if (!para.length) return;
@@ -180,21 +356,24 @@ function renderBody(text) {
     para = [];
   };
 
+  // The info string after the fence (```go) names the language. A block only
+  // closes on a fence of the same character at least as long as the opener,
+  // so a ``` inside a ~~~ block stays part of the code.
+  const fenceRe = /^\s*(`{3,}|~{3,})\s*([\w+#.-]*)/;
+
   for (const rawLine of lines) {
     const line = rawLine;
-    const fence = /^\s*(```|~~~)/.test(line);
+    const m = line.match(fenceRe);
     if (code !== null) {
-      if (fence) {
-        const pre = el('pre', 'code');
-        pre.textContent = code.join('\n');
-        body.append(pre);
+      if (m && m[1][0] === code.fence[0] && m[1].length >= code.fence.length) {
+        body.append(renderCodeBlock(code.lines.join('\n'), code.lang));
         code = null;
       } else {
-        code.push(line);
+        code.lines.push(line);
       }
       continue;
     }
-    if (fence) { flushPara(); code = []; continue; }
+    if (m) { flushPara(); code = { lines: [], lang: (m[2] || '').toLowerCase(), fence: m[1] }; continue; }
 
     const trimmed = line.trim();
     if (trimmed === '') { flushPara(); continue; }
@@ -220,10 +399,8 @@ function renderBody(text) {
     }
     para.push(trimmed);
   }
-  if (code !== null && code.length) { // unterminated fence at end of message
-    const pre = el('pre', 'code');
-    pre.textContent = code.join('\n');
-    body.append(pre);
+  if (code !== null && code.lines.length) { // unterminated fence at end of message
+    body.append(renderCodeBlock(code.lines.join('\n'), code.lang));
   }
   flushPara();
   return body;
@@ -250,7 +427,9 @@ function renderMessage(msg, index) {
 function renderAll(msgs) {
   messagesEl.textContent = '';
   if (!msgs.length) {
-    messagesEl.append(el('p', '', 'Nothing to read yet — say something in the session.')).id = 'empty';
+    const p = el('p', '', 'Nothing to read yet — say something in the session.');
+    p.id = 'empty';
+    messagesEl.append(p);
   }
   msgs.forEach((m, i) => messagesEl.append(renderMessage(m, i)));
   rebuildQueue();
@@ -283,7 +462,7 @@ function ttsKey(text) {
 function fetchClip(text) {
   const key = ttsKey(text);
   if (state.cache.has(key)) return state.cache.get(key);
-  const p = fetch('/api/tts', {
+  const p = fetch(api('/api/tts'), {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ text, provider: settings.provider, voice: settings.voice }),
@@ -699,12 +878,20 @@ function applyPendingReplace() {
 }
 
 async function refreshMessages() {
-  let data;
+  let resp, data;
   try {
-    data = await (await fetch('/api/messages')).json();
+    resp = await fetch(api('/api/messages'));
+    data = await resp.json();
   } catch (e) {
     return;
   }
+  if (!resp.ok) {
+    // The transcript may be gone (a pruned or moved session). Keep the
+    // conversation on screen; just say why live updates stopped.
+    setStatus(data.error || 'Cannot refresh this session');
+    return;
+  }
+  applyMeta(data);
   const olds = state.messages;
   const news = data.messages || [];
 
@@ -753,22 +940,118 @@ function debounce(fn, ms) {
 }
 
 function wireEvents() {
-  const es = new EventSource('/api/events');
+  const es = new EventSource(api('/api/events'));
   const refresh = debounce(refreshMessages, 300);
-  es.addEventListener('change', refresh);
-  es.addEventListener('load', () => location.reload());
+  // Change events name the session they are about; this page only cares
+  // about its own. (A payload that is not JSON comes from an older server,
+  // which only ever watched one transcript — treat that as ours.)
+  es.addEventListener('change', (ev) => {
+    try {
+      const d = JSON.parse(ev.data);
+      if (d.session && d.session !== SESSION) return;
+    } catch (e) { /* old single-session server */ }
+    refresh();
+  });
   // `tts-ctl stop` (and Ctrl+Alt+X) reach the page through this event —
   // nothing outside the browser can end an <audio> element directly.
   es.addEventListener('stop', () => stopPlayback());
   es.onerror = () => setStatus('Reconnecting…'); // EventSource retries by itself
 }
 
+/* ---------------- session navigator (a URL with no session id) ---------------- */
+
+function fmtAgo(ms) {
+  const s = Math.round((Date.now() - ms) / 1000);
+  if (s < 60) return 'just now';
+  const m = Math.round(s / 60);
+  if (m < 60) return m + ' min ago';
+  const h = Math.round(m / 60);
+  if (h < 24) return h + ' h ago';
+  const d = Math.round(h / 24);
+  return d === 1 ? 'yesterday' : d + ' days ago';
+}
+
+function renderNavigator(projects) {
+  messagesEl.textContent = '';
+  if (!projects.length) {
+    const p = el('p', '', 'No Claude Code sessions found on this machine.');
+    p.id = 'empty';
+    messagesEl.append(p);
+    return;
+  }
+  for (const proj of projects) {
+    const card = el('article', 'message nav-project');
+    const head = el('div', 'msg-head');
+    head.append(el('span', 'role', proj.name || 'unknown project'));
+    if (proj.dir) head.append(el('span', 'time', proj.dir));
+    card.append(head);
+    const list = el('div', 'nav-sessions');
+    for (const sess of proj.sessions) {
+      const a = document.createElement('a');
+      a.className = 'nav-session';
+      a.href = '/?s=' + encodeURIComponent(sess.id);
+      a.append(el('span', sess.title ? 'nav-title' : 'nav-title untitled', sess.title || 'untitled session'));
+      a.append(el('span', 'nav-when', fmtAgo(sess.updated)));
+      list.append(a);
+    }
+    card.append(list);
+    messagesEl.append(card);
+  }
+}
+
+// navKey captures everything the navigator DISPLAYS. Session files change
+// every second while Claude is talking, but the visible list (names, titles,
+// order, coarse relative times) changes rarely — and rebuilding the DOM on
+// every change event would eat in-progress clicks on the session links.
+let lastNavKey = '';
+function navKey(projects) {
+  return JSON.stringify(projects.map((p) => [
+    p.name,
+    p.sessions.map((sess) => [sess.id, sess.title, fmtAgo(sess.updated)]),
+  ]));
+}
+
+async function refreshNavigator() {
+  let data;
+  try {
+    data = await (await fetch('/api/sessions')).json();
+  } catch (e) {
+    setStatus('Cannot reach the reader server');
+    return;
+  }
+  const projects = data.projects || [];
+  const key = navKey(projects);
+  if (key !== lastNavKey) {
+    lastNavKey = key;
+    renderNavigator(projects);
+  }
+  setStatus('Pick a session to read along');
+}
+
+async function initNavigator() {
+  document.body.classList.add('nav');
+  setPageTitle('Claude Code — Sessions');
+  await refreshNavigator();
+  // Keep the list roughly current: server events cover the sessions it
+  // already follows, and the slow timer picks up everything else (session
+  // files change constantly while Claude is talking).
+  const refresh = debounce(refreshNavigator, 500);
+  const es = new EventSource('/api/events');
+  es.addEventListener('change', refresh);
+  es.addEventListener('load', refresh);
+  setInterval(refreshNavigator, 30000);
+}
+
 /* ---------------- boot ---------------- */
 
 async function init() {
+  if (!SESSION) {
+    initNavigator();
+    return;
+  }
   loadSettings();
   try {
-    state.cfg = await (await fetch('/api/config')).json();
+    state.cfg = await (await fetch(api('/api/config'))).json();
   } catch (e) {
     setStatus('Cannot reach the reader server');
     return;
@@ -778,7 +1061,14 @@ async function init() {
   wireSentenceClicks();
   wireKeyboard();
 
-  const data = await (await fetch('/api/messages')).json();
+  const resp = await fetch(api('/api/messages'));
+  const data = await resp.json();
+  if (!resp.ok) {
+    setStatus(data.error || 'Cannot load this session');
+    toast((data.error || 'Cannot load this session') + ' — pick another from the Sessions list.');
+    return;
+  }
+  applyMeta(data);
   state.messages = data.messages || [];
   renderAll(state.messages);
   const parts = (data.transcript || '').split('/');
