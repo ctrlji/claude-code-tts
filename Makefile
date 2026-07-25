@@ -1,4 +1,4 @@
-.PHONY: build install clean test lint run help
+.PHONY: build install install-vscode-ext clean test lint run help
 
 # Variables
 BINARY_NAME=tts-server
@@ -59,6 +59,15 @@ install: build
 	@echo ""
 	@echo "Add this to your claude_desktop_config.json or run:"
 	@echo "  claude mcp add tts $(INSTALL_DIR)/bin/$(BINARY_NAME)"
+
+## install-vscode-ext: Install the companion VS Code extension (chat-panel context menu + zero-click reader)
+install-vscode-ext:
+	@echo "Installing the claude-code-tts-bridge VS Code extension..."
+	@rm -rf $(HOME)/.vscode/extensions/claude-code-tts.claude-code-tts-bridge-0.1.0
+	@mkdir -p $(HOME)/.vscode/extensions/claude-code-tts.claude-code-tts-bridge-0.1.0
+	@cp vscode-extension/package.json vscode-extension/extension.js \
+		$(HOME)/.vscode/extensions/claude-code-tts.claude-code-tts-bridge-0.1.0/
+	@echo "Installed. Reload the VS Code window once (Developer: Reload Window) to activate it."
 
 ## uninstall: Remove plugin from Claude Code plugins directory
 uninstall:
