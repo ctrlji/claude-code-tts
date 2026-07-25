@@ -95,6 +95,11 @@ make install            # Installs to ~/.claude/plugins/claude-code-tts/
 │        on); headings render at real h1-h6 sizes, and inline │
 │        markdown (code chips, bold, italic, links) renders   │
 │        styled while the spoken text stays clean             │
+│      - document.go: serves any Markdown/plain-text file     │
+│        through the same page (`tts-ctl read notes.md`): the │
+│        file becomes one "doc"-role message, id "doc-<hash>",│
+│        titled by its first heading; highlighting, follow    │
+│        scroll and live reload on save all work unchanged    │
 │      - server.go: loopback-only HTTP server with embedded   │
 │        web page (assets/), /api/tts synthesis endpoint,     │
 │        SSE live updates as the transcript grows, and        │

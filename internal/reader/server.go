@@ -121,8 +121,13 @@ func New(opts Options) *Server {
 }
 
 // sessionIDFor derives a session id from a transcript path: the filename
-// stem, which is the Claude Code session id.
+// stem, which is the Claude Code session id. A document (any non-.jsonl
+// file) instead gets a path-derived "doc-…" id, so several open documents
+// never collide with each other or with session UUIDs.
 func sessionIDFor(path string) string {
+	if IsDocumentPath(path) {
+		return documentSessionID(path)
+	}
 	return strings.TrimSuffix(filepath.Base(path), ".jsonl")
 }
 
@@ -187,6 +192,11 @@ func (s *Server) sessionFor(r *http.Request) (*session, error) {
 	s.mu.Unlock()
 	if !sessionIDRe.MatchString(id) {
 		return nil, fmt.Errorf("invalid session id")
+	}
+	// Document ids only live in this server's memory — there is no on-disk
+	// registry to look them up in after a restart.
+	if strings.HasPrefix(id, "doc-") {
+		return nil, fmt.Errorf("this document is no longer registered; run `tts-ctl read <file>` again")
 	}
 	path, err := findTranscriptByIDIn(s.projectsRoot, id)
 	if err != nil {
@@ -387,7 +397,15 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, http.StatusNotFound, err.Error())
 		return
 	}
-	msgs, err := ParseTranscript(sess.path)
+	// A document (a Markdown or plain-text file) goes through the same page
+	// as a session; only the parsing and the labels differ.
+	isDoc := IsDocumentPath(sess.path)
+	var msgs []Message
+	if isDoc {
+		msgs, err = ParseDocument(sess.path)
+	} else {
+		msgs, err = ParseTranscript(sess.path)
+	}
 	if err != nil {
 		writeJSONError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -397,11 +415,18 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 		version = fi.ModTime().UnixNano()
 	}
 	// Title and project name let the page label itself (tab title and header)
-	// as "<project> — <session title>".
-	title, cwd := SessionMeta(sess.path)
-	project := ""
-	if cwd != "" {
-		project = filepath.Base(cwd)
+	// as "<project> — <session title>". A document is labeled by its parent
+	// directory and its first heading (or filename).
+	var title, project string
+	if isDoc {
+		title = DocumentTitle(sess.path)
+		project = filepath.Base(filepath.Dir(sess.path))
+	} else {
+		var cwd string
+		title, cwd = SessionMeta(sess.path)
+		if cwd != "" {
+			project = filepath.Base(cwd)
+		}
 	}
 	writeJSON(w, map[string]any{
 		"session":    sess.id,

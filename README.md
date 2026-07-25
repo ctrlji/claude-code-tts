@@ -284,10 +284,10 @@ Editing the config file is fine for your defaults, but for quick changes during 
 | `/tts-sentence` | Go back to speaking only the first sentence |
 | `/tts-off` | Stop automatic speaking |
 | `/tts-last` | Read the last response aloud now (add `--with-code` to include code) |
-| `/tts-read` | Open the read-along browser view of this conversation |
+| `/tts-read` | Open the read-along browser view of this conversation (or of a Markdown/text file: `/tts-read PATH`) |
 | `/tts mode full\|sentence\|off` | Set the auto-speak mode |
 | `/tts file PATH` | Read a text or Markdown file aloud now |
-| `/tts read [PATH]` | Same as `/tts-read`; optionally name a transcript file |
+| `/tts read [PATH]` | Same as `/tts-read`; optionally name a transcript or a Markdown/text file |
 | `/tts say TEXT` | Speak some text right now |
 | `/tts selection` | Speak the text currently highlighted in any window (see below) |
 | `/tts stop` | Stop any read-out that is currently playing |
@@ -395,6 +395,7 @@ Notes on how it works:
 - One reader server handles any number of sessions. Every session has its own page URL (`/?s=<session-id>`), so running `/tts-read` in another project opens another tab instead of hijacking the one you already have. Each page titles itself `project — session title`, which is what its tab shows.
 - Opening the page without a session id (just `http://127.0.0.1:8898/`, or the **☰ Sessions** link in the top bar) shows the **navigator**: every Claude Code project on the machine with its sessions, newest first, each a link into the read-along view. Old sessions work the same as live ones.
 - Running `/tts-read` again reuses the already-open reader server instead of starting a second one. Pass a path (`/tts-read ~/.claude/projects/<project>/<session>.jsonl`) to read a specific transcript file directly.
+- **Any Markdown or plain-text file works too**: `/tts-read notes.md` (or `tts-ctl read notes.md`) opens the file in the same read-along page, with the identical follow experience — sentence and word highlighting, follow scrolling, click-to-read, selection reading, and code blocks that are shown but skipped by continuous reading. The page live-reloads when you save the file. Unlike `/tts file`, which plays audio through the native player with nothing to look at, this gives the full visual read-along. One note: the page URL for a file only survives as long as the reader server runs; after a restart, run the command again.
 - VS Code offers no command-line way to run a workbench command in an already-running window, so a plain shell cannot open the Simple Browser by itself. Without the companion extension (next section) the printed link is a one-click open; with it, the open is fully automatic.
 
 ### The companion VS Code extension (right-click in the real chat + zero-click opens)

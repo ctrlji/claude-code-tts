@@ -22,7 +22,7 @@ import (
 )
 
 func main() {
-	transcript := flag.String("transcript", "", "path to a session transcript (.jsonl); default: the newest session of the project directory")
+	transcript := flag.String("transcript", "", "path to a session transcript (.jsonl) or a Markdown/text file to read; default: the newest session of the project directory")
 	projectDir := flag.String("project-dir", "", "project directory used to locate the session (default: $CLAUDE_PROJECT_DIR, else the working directory)")
 	port := flag.Int("port", portFromEnv(), "port to listen on (127.0.0.1 only); a busy port falls back to a random free one")
 	noOpen := flag.Bool("no-open", false, "do not open the page anywhere")
@@ -54,7 +54,7 @@ func main() {
 		path = found
 	}
 	if fi, err := os.Stat(path); err != nil || fi.IsDir() {
-		fatal("transcript is not a readable file: %s", path)
+		fatal("not a readable file: %s", path)
 	}
 
 	// If a reader from this plugin is already running, register the session

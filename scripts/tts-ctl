@@ -16,9 +16,12 @@
 #   tts-ctl say <text...>              speak the given text right now
 #   tts-ctl last [--with-code|--raw]   read the last response aloud now
 #   tts-ctl file <path> [--with-code]  read a text/Markdown file aloud now
-#   tts-ctl read [PATH] [--browser]    open the read-along view (VS Code tab by
-#                                      default inside VS Code; --browser forces
-#                                      the system web browser)
+#   tts-ctl read [PATH] [--browser]    open the read-along view: the current
+#                                      session, a session transcript (.jsonl),
+#                                      or any Markdown/text file, read aloud
+#                                      with follow-along highlighting (VS Code
+#                                      tab by default inside VS Code; --browser
+#                                      forces the system web browser)
 #   tts-ctl selection                  speak the text currently highlighted in
 #                                      any window (X11 primary selection) —
 #                                      works on the Claude Code chat panel too

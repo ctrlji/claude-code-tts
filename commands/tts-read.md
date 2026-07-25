@@ -1,6 +1,6 @@
 ---
-description: Open the read-along view — this conversation read aloud with live sentence and word highlighting (opens inside VS Code by default; add --browser for the system browser; select any text on the page to read just that part)
-argument-hint: [transcript-path] [--browser]
+description: Open the read-along view — this conversation, or any Markdown/text file you name, read aloud with live sentence and word highlighting (opens inside VS Code by default; add --browser for the system browser; select any text on the page to read just that part)
+argument-hint: [transcript-or-file-path] [--browser]
 allowed-tools: Bash(~/.claude/plugins/claude-code-tts/bin/tts-ctl:*)
 ---
 

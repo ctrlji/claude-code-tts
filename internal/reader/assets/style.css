@@ -99,6 +99,9 @@ button.primary { background: var(--accent); border-color: var(--accent); color: 
   overflow-wrap: break-word;
 }
 .message.user { background: var(--user-bg); }
+/* A document (a whole Markdown/text file read as one card) gets a little
+   more breathing room than a chat bubble, since it is the entire page. */
+.message.doc { padding: 1rem 1.4rem; }
 .msg-head {
   display: flex; align-items: center; gap: 0.6rem;
   font-size: 0.78rem; color: var(--muted);

@@ -526,12 +526,22 @@ function renderTurnBody(msg) {
   return body;
 }
 
+// roleLabel names a card's author. The 'doc' role is a Markdown or text file
+// served whole (tts-ctl read FILE); it is one "message" but not a chat turn.
+function roleLabel(role) {
+  if (role === 'user') return 'You';
+  if (role === 'doc') return 'Document';
+  return 'Claude';
+}
+
 function renderMessage(msg, index) {
   const card = el('article', 'message ' + msg.role);
   card.dataset.mi = index;
   const head = el('div', 'msg-head');
-  head.append(el('span', 'role', msg.role === 'user' ? 'You' : 'Claude'));
-  const t = fmtTime(msg.timestamp);
+  head.append(el('span', 'role', roleLabel(msg.role)));
+  // A document's timestamp is its file mtime; showing it as a clock time
+  // would read like a chat time, so only real turns show one.
+  const t = msg.role === 'doc' ? '' : fmtTime(msg.timestamp);
   if (t) head.append(el('span', 'time', t));
   const readBtn = el('button', 'msg-read', '🔊 Read');
   readBtn.title = 'Read this message aloud';
@@ -611,13 +621,51 @@ function fetchClip(text) {
   return p;
 }
 
+/* ---------------- audio: one shared, unlocked element ---------------- */
+
+// Inside VS Code's Simple Browser the page lives in a cross-origin iframe,
+// where a click grants only a short-lived permission to start audio. A fresh
+// Audio element per sentence therefore worked for the first clip and was
+// blocked on the next one, halting playback after every sentence. The fix is
+// the standard unlock pattern: ONE persistent element, primed by the first
+// real user gesture with a silent clip, and reused for every sentence.
+// Chromium remembers the permission per element, so the shared element keeps
+// playing with no further gestures.
+const SILENT_CLIP =
+  'data:audio/wav;base64,UklGRigAAABXQVZFZm10IBAAAAABAAEAQB8AAEAfAAABAAgAZGF0YQQAAACAgICA';
+const player = new Audio();
+
+function unlockAudio() {
+  // If a clip is already playing (or paused mid-clip), the element is
+  // necessarily unlocked; priming now would clobber its src.
+  if (state.playing || state.selReading || !player.paused) return;
+  player.src = SILENT_CLIP;
+  const p = player.play();
+  if (p) p.then(() => player.pause()).catch(() => { /* gesture too stale; the next one retries */ });
+}
+document.addEventListener('pointerdown', unlockAudio, true);
+document.addEventListener('keydown', unlockAudio, true);
+
+// armAutoResume makes a block self-healing: the next click both unlocks the
+// element (via unlockAudio above) and restarts reading where it stopped.
+function armAutoResume(start, end) {
+  const once = () => {
+    document.removeEventListener('pointerdown', once, true);
+    // Defer so that if this click also targeted a sentence or a button, that
+    // handler runs last and wins (it bumps playGen).
+    setTimeout(() => { if (!state.playing && !state.selReading) playRange(start, end); }, 0);
+  };
+  document.addEventListener('pointerdown', once, true);
+}
+
 /* ---------------- audio: playback with karaoke highlight ---------------- */
 
 // playClip plays one clip and keeps the word highlight moving. Resolves with
 // 'ended', 'stopped' (user action), or 'blocked' (autoplay policy).
 function playClip(url, sentEl) {
   return new Promise((resolve) => {
-    const audio = new Audio(url);
+    const audio = player;
+    audio.src = url;
     state.audio = audio;
     audio.playbackRate = settings.speed;
 
@@ -642,7 +690,9 @@ function playClip(url, sentEl) {
         return at;
       });
     };
-    audio.addEventListener('loadedmetadata', computeStarts);
+    // Property handlers, not addEventListener: each clip replaces the previous
+    // clip's handlers on the shared element instead of stacking on them.
+    audio.onloadedmetadata = computeStarts;
 
     const highlightNow = () => {
       if (!starts.length) return;
@@ -659,7 +709,7 @@ function playClip(url, sentEl) {
     raf = requestAnimationFrame(tick);
     // rAF stops in background tabs; timeupdate keeps the highlight roughly
     // moving there so the page is not frozen mid-sentence when you tab back.
-    audio.addEventListener('timeupdate', highlightNow);
+    audio.ontimeupdate = highlightNow;
 
     let done = false;
     const finish = (how) => {
@@ -671,16 +721,23 @@ function playClip(url, sentEl) {
         words.forEach((w) => w.classList.remove('w-active'));
       }
       audio.pause();
+      audio.onloadedmetadata = audio.ontimeupdate = audio.onended = audio.onerror = null;
       state.audio = null;
       state.stopClip = null;
       resolve(how);
     };
     state.stopClip = () => finish('stopped');
-    audio.addEventListener('ended', () => finish('ended'));
-    audio.addEventListener('error', () => finish('ended'));
-    audio.play().catch(() => {
-      toast('The browser blocked audio before your first interaction with the page. Click anywhere, then press Play.');
-      finish('blocked');
+    audio.onended = () => finish('ended');
+    audio.onerror = () => finish('ended');
+    audio.play().catch((err) => {
+      if (err && err.name === 'NotAllowedError') {
+        toast('The browser blocked audio. Click anywhere on the page and reading will resume.');
+        finish('blocked');
+      } else {
+        // A decode or abort problem with this one clip; skip the sentence
+        // instead of halting the whole read.
+        finish('ended');
+      }
     });
   });
 }
@@ -714,7 +771,7 @@ async function playRange(start, end) {
     if (next && state.qIndex + 1 <= state.endIndex) fetchClip(next.text).catch(() => {});
     const how = await playClip(url, item.el);
     if (gen !== state.playGen) return;
-    if (how === 'blocked') break;
+    if (how === 'blocked') { armAutoResume(state.qIndex, state.endIndex); break; }
     if (how === 'stopped' && state.skipDelta === 0) break; // explicit stop; qIndex stays as resume point
     const delta = state.skipDelta || 1;
     state.skipDelta = 0;

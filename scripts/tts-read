@@ -6,7 +6,9 @@
 #
 # Usage:
 #   tts-read                    open the newest session of the current project
-#   tts-read PATH               open a specific session transcript (.jsonl)
+#   tts-read PATH               open a session transcript (.jsonl), or any
+#                               Markdown/text file to read it with the same
+#                               follow-along highlighting
 #   tts-read --browser          open in the system web browser
 #
 # Inside VS Code the page stays in the editor: the printed URL opens as a
