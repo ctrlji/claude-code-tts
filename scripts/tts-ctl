@@ -16,6 +16,9 @@
 #   tts-ctl say <text...>              speak the given text right now
 #   tts-ctl last [--with-code|--raw]   read the last response aloud now
 #   tts-ctl file <path> [--with-code]  read a text/Markdown file aloud now
+#   tts-ctl read [PATH] [--browser]    open the read-along view (VS Code tab by
+#                                      default inside VS Code; --browser forces
+#                                      the system web browser)
 #   tts-ctl stop                       stop any read-out in progress
 #   tts-ctl set KEY VALUE              set any TTS_* variable directly
 #   tts-ctl show                       print the current effective settings
@@ -105,6 +108,9 @@ case "$cmd" in
     file)
         exec "$PLUGIN_ROOT/bin/speak-file" "$@"
         ;;
+    read)
+        exec "$PLUGIN_ROOT/bin/tts-read" "$@"
+        ;;
     stop)
         # Stop any read-out from the standalone player path (say / last / file /
         # the auto-speak hook). That path plays through the speak-text binary,
@@ -115,6 +121,23 @@ case "$cmd" in
         done
         # Also kill the player working on one of our temp files (tts-<digits>.mp3).
         pkill -f 'tts-[0-9]*\.mp3' 2>/dev/null && stopped=1
+        # And tell any open read-along pages to stop. Their audio plays inside
+        # the browser, where pkill cannot reach; the reader server relays this
+        # to every connected page over its event stream.
+        reader_port="${TTS_READER_PORT:-8898}"
+        if [ -s "$PLUGIN_ROOT/reader.url" ]; then
+            p="$(sed -nE 's|^http://127\.0\.0\.1:([0-9]+)/$|\1|p' "$PLUGIN_ROOT/reader.url")"
+            [ -n "$p" ] && reader_port="$p"
+        fi
+        if python3 - "$reader_port" <<'PY' 2>/dev/null
+import sys, urllib.request
+req = urllib.request.Request(
+    "http://127.0.0.1:%s/api/stop" % sys.argv[1], data=b"{}", method="POST")
+urllib.request.urlopen(req, timeout=1.5)
+PY
+        then
+            stopped=1
+        fi
         if [ "$stopped" = 1 ]; then
             echo "stopped the current read-out"
         else

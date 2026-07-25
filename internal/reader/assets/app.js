@@ -1,0 +1,792 @@
+// Read-along view: renders the conversation, plays TTS audio in the browser,
+// and highlights the sentence and word being spoken.
+//
+// How the karaoke timing works: the page asks the server for audio one
+// sentence at a time, so the sentence highlight is exact by construction.
+// Word timing inside a sentence is estimated by sharing the clip's duration
+// across the words in proportion to their length. No provider returns word
+// timestamps through the plain speech endpoint, and the estimate tracks real
+// speech closely enough to follow with the eye.
+'use strict';
+
+const $ = (sel) => document.querySelector(sel);
+const messagesEl = $('#messages');
+
+const SPEEDS = [0.5, 0.75, 0.9, 1.0, 1.1, 1.25, 1.5, 1.75, 2.0];
+const MAX_SENTENCE_CHARS = 300; // one TTS request per sentence; keep them small
+const CACHE_MAX_CLIPS = 60;
+
+const state = {
+  cfg: null,
+  messages: [],
+  queue: [],          // [{el, text}] every readable sentence, in document order
+  qIndex: 0,          // current/next sentence to read (the resume point)
+  endIndex: Infinity, // playRange stops after this queue index
+  playing: false,
+  paused: false,
+  selReading: false,
+  skipDelta: 0,       // set by prev/next while a clip plays
+  audio: null,
+  stopClip: null,     // ends the current clip early; set while a clip plays
+  playGen: 0,         // bumping this cancels any in-flight play loop
+  cache: new Map(),   // ttsKey -> Promise<blob URL>
+  cacheOrder: [],
+  pendingReplace: null, // full message list to re-render once playback stops
+};
+
+const settings = {
+  provider: '',
+  voice: '',
+  speed: 1.0,
+  follow: true,
+  autoread: false,
+};
+
+/* ---------------- settings persistence ---------------- */
+
+function loadSettings() {
+  try {
+    const raw = localStorage.getItem('ttsread.settings');
+    if (raw) Object.assign(settings, JSON.parse(raw));
+  } catch (e) { /* ignore a corrupt store */ }
+}
+
+function saveSettings() {
+  try { localStorage.setItem('ttsread.settings', JSON.stringify(settings)); } catch (e) { /* ignore */ }
+}
+
+function savedVoiceFor(provider) {
+  try { return localStorage.getItem('ttsread.voice.' + provider) || ''; } catch (e) { return ''; }
+}
+
+function saveVoiceFor(provider, voice) {
+  try { localStorage.setItem('ttsread.voice.' + provider, voice); } catch (e) { /* ignore */ }
+}
+
+/* ---------------- small DOM helpers ---------------- */
+
+function el(tag, className, text) {
+  const node = document.createElement(tag);
+  if (className) node.className = className;
+  if (text !== undefined) node.textContent = text;
+  return node;
+}
+
+let toastTimer = 0;
+function toast(msg) {
+  const t = $('#toast');
+  t.textContent = msg;
+  t.classList.add('show');
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => t.classList.remove('show'), 5000);
+}
+
+function setStatus(msg) {
+  $('#status-text').textContent = msg;
+}
+
+function fmtTime(iso) {
+  try {
+    const d = new Date(iso);
+    if (isNaN(d.getTime())) return '';
+    return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  } catch (e) { return ''; }
+}
+
+/* ---------------- text processing ---------------- */
+
+// Strip inline Markdown for display: the read-along view favors clean prose,
+// matching the plugin's default of stripping markup before speaking.
+function cleanInline(text) {
+  return text
+    .replace(/!\[[^\]]*\]\([^)]*\)/g, '')        // images
+    .replace(/\[([^\]]*)\]\([^)]*\)/g, '$1')     // links -> their text
+    .replace(/`+/g, '')
+    .replace(/\*\*+/g, '')
+    .replace(/(^|\s)\*(\S[^*]*\S|\S)\*(?=\s|$|[.,;:!?])/g, '$1$2') // *emphasis*
+    .replace(/(^|\s)_(\S[^_]*\S|\S)_(?=\s|$|[.,;:!?])/g, '$1$2');  // _emphasis_
+}
+
+// Words that end with a period but usually do not end a sentence.
+const ABBREV_RE = /(?:\b(?:e\.g|i\.e|etc|vs|cf|Mr|Mrs|Ms|Dr|Prof|St|No|Fig|approx)|\b[A-Z])\.$/;
+
+function splitSentences(text) {
+  const out = [];
+  let buf = '';
+  for (let piece of text.split(/(?<=[.!?…])\s+/)) {
+    piece = piece.trim();
+    if (!piece) continue;
+    buf = buf ? buf + ' ' + piece : piece;
+    if (ABBREV_RE.test(buf)) continue; // likely an abbreviation; keep joining
+    out.push(buf);
+    buf = '';
+  }
+  if (buf) out.push(buf);
+
+  // Cut any monster sentence so a single TTS request stays quick.
+  const final = [];
+  for (const s of out) {
+    let rest = s;
+    while (rest.length > MAX_SENTENCE_CHARS) {
+      let cut = rest.lastIndexOf(', ', MAX_SENTENCE_CHARS);
+      if (cut < 80) cut = rest.lastIndexOf(' ', MAX_SENTENCE_CHARS);
+      if (cut < 80) cut = MAX_SENTENCE_CHARS;
+      final.push(rest.slice(0, cut + 1).trim());
+      rest = rest.slice(cut + 1).trim();
+    }
+    if (rest) final.push(rest);
+  }
+  return final;
+}
+
+/* ---------------- rendering ---------------- */
+
+function makeSentenceSpan(sentence) {
+  const span = el('span', 'sent');
+  span.dataset.t = sentence;
+  span.title = 'Click to read from here';
+  for (const token of sentence.split(/(\s+)/)) {
+    if (!token) continue;
+    if (/^\s+$/.test(token)) span.append(token);
+    else span.append(el('span', 'w', token));
+  }
+  return span;
+}
+
+// appendSentences fills a block element with sentence spans separated by spaces.
+function appendSentences(block, text) {
+  const sentences = splitSentences(text);
+  sentences.forEach((s, i) => {
+    if (i > 0) block.append(' ');
+    block.append(makeSentenceSpan(s));
+  });
+}
+
+// renderBody converts one message's Markdown-ish text into readable blocks.
+// Fenced code becomes a <pre> that continuous reading skips; everything else
+// becomes paragraphs of clickable sentence spans. Built entirely with
+// createElement/textContent so transcript content can never inject markup.
+function renderBody(text) {
+  const body = el('div', 'msg-body');
+  const lines = text.split('\n');
+  let para = [];
+  let code = null; // array of code lines while inside a fence
+
+  const flushPara = () => {
+    if (!para.length) return;
+    const p = el('p');
+    appendSentences(p, cleanInline(para.join(' ')));
+    body.append(p);
+    para = [];
+  };
+
+  for (const rawLine of lines) {
+    const line = rawLine;
+    const fence = /^\s*(```|~~~)/.test(line);
+    if (code !== null) {
+      if (fence) {
+        const pre = el('pre', 'code');
+        pre.textContent = code.join('\n');
+        body.append(pre);
+        code = null;
+      } else {
+        code.push(line);
+      }
+      continue;
+    }
+    if (fence) { flushPara(); code = []; continue; }
+
+    const trimmed = line.trim();
+    if (trimmed === '') { flushPara(); continue; }
+
+    const heading = trimmed.match(/^(#{1,6})\s+(.*)$/);
+    if (heading) {
+      flushPara();
+      const level = Math.min(heading[1].length, 3);
+      const h = el('p', 'h h' + level);
+      appendSentences(h, cleanInline(heading[2]));
+      body.append(h);
+      continue;
+    }
+    const bullet = trimmed.match(/^[-*+]\s+(.*)$/);
+    const numbered = trimmed.match(/^(\d+)[.)]\s+(.*)$/);
+    if (bullet || numbered) {
+      flushPara();
+      const li = el('p', numbered ? 'li num' : 'li');
+      const content = bullet ? bullet[1] : numbered[1] + '. ' + numbered[2];
+      appendSentences(li, cleanInline(content));
+      body.append(li);
+      continue;
+    }
+    para.push(trimmed);
+  }
+  if (code !== null && code.length) { // unterminated fence at end of message
+    const pre = el('pre', 'code');
+    pre.textContent = code.join('\n');
+    body.append(pre);
+  }
+  flushPara();
+  return body;
+}
+
+function renderMessage(msg, index) {
+  const card = el('article', 'message ' + msg.role);
+  card.dataset.mi = index;
+  const head = el('div', 'msg-head');
+  head.append(el('span', 'role', msg.role === 'user' ? 'You' : 'Claude'));
+  const t = fmtTime(msg.timestamp);
+  if (t) head.append(el('span', 'time', t));
+  const readBtn = el('button', 'msg-read', '🔊 Read');
+  readBtn.title = 'Read this message aloud';
+  readBtn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    readCard(card);
+  });
+  head.append(readBtn);
+  card.append(head, renderBody(msg.text));
+  return card;
+}
+
+function renderAll(msgs) {
+  messagesEl.textContent = '';
+  if (!msgs.length) {
+    messagesEl.append(el('p', '', 'Nothing to read yet — say something in the session.')).id = 'empty';
+  }
+  msgs.forEach((m, i) => messagesEl.append(renderMessage(m, i)));
+  rebuildQueue();
+}
+
+// rebuildQueue re-collects every readable sentence. Cards are append-only on
+// live updates, so the element the play loop is on keeps existing and we can
+// re-find its position by identity.
+function rebuildQueue() {
+  const currentEl = state.queue[state.qIndex] ? state.queue[state.qIndex].el : null;
+  state.queue = [...messagesEl.querySelectorAll('.sent')].map((s) => ({ el: s, text: s.dataset.t }));
+  if (currentEl) {
+    const i = state.queue.findIndex((q) => q.el === currentEl);
+    if (i >= 0) state.qIndex = i;
+  }
+  if (state.qIndex >= state.queue.length) state.qIndex = 0;
+  updateButtons();
+}
+
+function queueIndexOf(sentEl) {
+  return state.queue.findIndex((q) => q.el === sentEl);
+}
+
+/* ---------------- audio: fetch + cache ---------------- */
+
+function ttsKey(text) {
+  return settings.provider + '|' + settings.voice + '|' + text;
+}
+
+function fetchClip(text) {
+  const key = ttsKey(text);
+  if (state.cache.has(key)) return state.cache.get(key);
+  const p = fetch('/api/tts', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ text, provider: settings.provider, voice: settings.voice }),
+  }).then(async (r) => {
+    if (!r.ok) {
+      let msg = 'TTS request failed (' + r.status + ')';
+      try { msg = (await r.json()).error || msg; } catch (e) { /* keep default */ }
+      throw new Error(msg);
+    }
+    return URL.createObjectURL(await r.blob());
+  });
+  // Do not cache failures, or one glitch would mute a sentence forever.
+  p.catch(() => {
+    state.cache.delete(key);
+    const i = state.cacheOrder.indexOf(key);
+    if (i >= 0) state.cacheOrder.splice(i, 1);
+  });
+  state.cache.set(key, p);
+  state.cacheOrder.push(key);
+  while (state.cacheOrder.length > CACHE_MAX_CLIPS) {
+    const old = state.cacheOrder.shift();
+    const q = state.cache.get(old);
+    state.cache.delete(old);
+    if (q) q.then((u) => URL.revokeObjectURL(u)).catch(() => {});
+  }
+  return p;
+}
+
+/* ---------------- audio: playback with karaoke highlight ---------------- */
+
+// playClip plays one clip and keeps the word highlight moving. Resolves with
+// 'ended', 'stopped' (user action), or 'blocked' (autoplay policy).
+function playClip(url, sentEl) {
+  return new Promise((resolve) => {
+    const audio = new Audio(url);
+    state.audio = audio;
+    audio.playbackRate = settings.speed;
+
+    let words = [];
+    let starts = [];
+    let raf = 0;
+    if (sentEl) {
+      sentEl.classList.add('s-active');
+      if (settings.follow) sentEl.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      words = [...sentEl.querySelectorAll('.w')];
+    }
+
+    const computeStarts = () => {
+      const d = audio.duration;
+      if (!isFinite(d) || d <= 0 || !words.length) return;
+      const weights = words.map((w) => w.textContent.length + 1);
+      const total = weights.reduce((a, b) => a + b, 0);
+      let acc = 0;
+      starts = weights.map((wt) => {
+        const at = (d * acc) / total;
+        acc += wt;
+        return at;
+      });
+    };
+    audio.addEventListener('loadedmetadata', computeStarts);
+
+    const highlightNow = () => {
+      if (!starts.length) return;
+      const t = audio.currentTime;
+      let idx = 0;
+      for (let k = 0; k < starts.length; k++) {
+        if (starts[k] <= t) idx = k; else break;
+      }
+      for (let k = 0; k < words.length; k++) {
+        words[k].classList.toggle('w-active', k === idx);
+      }
+    };
+    const tick = () => { highlightNow(); raf = requestAnimationFrame(tick); };
+    raf = requestAnimationFrame(tick);
+    // rAF stops in background tabs; timeupdate keeps the highlight roughly
+    // moving there so the page is not frozen mid-sentence when you tab back.
+    audio.addEventListener('timeupdate', highlightNow);
+
+    let done = false;
+    const finish = (how) => {
+      if (done) return;
+      done = true;
+      cancelAnimationFrame(raf);
+      if (sentEl) {
+        sentEl.classList.remove('s-active');
+        words.forEach((w) => w.classList.remove('w-active'));
+      }
+      audio.pause();
+      state.audio = null;
+      state.stopClip = null;
+      resolve(how);
+    };
+    state.stopClip = () => finish('stopped');
+    audio.addEventListener('ended', () => finish('ended'));
+    audio.addEventListener('error', () => finish('ended'));
+    audio.play().catch(() => {
+      toast('The browser blocked audio before your first interaction with the page. Click anywhere, then press Play.');
+      finish('blocked');
+    });
+  });
+}
+
+// playRange reads queue entries start..end (inclusive). It is the single
+// playback loop; bumping state.playGen cancels a running loop instantly.
+async function playRange(start, end) {
+  stopSelectionOnly();
+  const gen = ++state.playGen;
+  if (state.stopClip) state.stopClip();
+  if (!state.queue.length) return;
+
+  state.playing = true;
+  state.paused = false;
+  state.qIndex = Math.min(Math.max(start, 0), state.queue.length - 1);
+  state.endIndex = end;
+  updateButtons();
+
+  while (state.playing && gen === state.playGen && state.qIndex < state.queue.length && state.qIndex <= state.endIndex) {
+    const item = state.queue[state.qIndex];
+    setStatus('Reading sentence ' + (state.qIndex + 1) + ' of ' + state.queue.length + '…');
+    let url;
+    try {
+      url = await fetchClip(item.text);
+    } catch (e) {
+      toast(e.message);
+      break;
+    }
+    if (!state.playing || gen !== state.playGen) return;
+    const next = state.queue[state.qIndex + 1];
+    if (next && state.qIndex + 1 <= state.endIndex) fetchClip(next.text).catch(() => {});
+    const how = await playClip(url, item.el);
+    if (gen !== state.playGen) return;
+    if (how === 'blocked') break;
+    if (how === 'stopped' && state.skipDelta === 0) break; // explicit stop; qIndex stays as resume point
+    const delta = state.skipDelta || 1;
+    state.skipDelta = 0;
+    state.qIndex = Math.max(0, state.qIndex + delta);
+  }
+
+  if (gen === state.playGen) {
+    state.playing = false;
+    state.paused = false;
+    state.endIndex = Infinity;
+    updateButtons();
+    setStatus('Idle');
+    applyPendingReplace();
+  }
+}
+
+function playFrom(i) { playRange(i, Infinity); }
+
+function readCard(card) {
+  const sents = [...card.querySelectorAll('.sent')];
+  if (!sents.length) return;
+  const start = queueIndexOf(sents[0]);
+  const end = queueIndexOf(sents[sents.length - 1]);
+  if (start >= 0) playRange(start, end);
+}
+
+function stopPlayback() {
+  state.playing = false;
+  state.selReading = false;
+  state.skipDelta = 0;
+  if (state.stopClip) state.stopClip();
+  updateButtons();
+  setStatus('Idle');
+  applyPendingReplace();
+}
+
+function stopSelectionOnly() {
+  if (!state.selReading) return;
+  state.selReading = false;
+  if (state.stopClip) state.stopClip();
+}
+
+function skip(delta) {
+  if (!state.playing || !state.stopClip) return;
+  state.skipDelta = delta === 1 ? 1 : -1;
+  state.stopClip();
+}
+
+function togglePlay() {
+  if (state.playing && state.audio) {
+    if (state.paused) {
+      state.paused = false;
+      state.audio.play().catch(() => {});
+    } else {
+      state.paused = true;
+      state.audio.pause();
+    }
+    updateButtons();
+    return;
+  }
+  playFrom(state.qIndex);
+}
+
+// readTextAloud speaks arbitrary text (the user's selection). There are no
+// sentence spans to highlight; the user's own selection stays visible instead.
+async function readTextAloud(text) {
+  const gen = ++state.playGen;
+  if (state.stopClip) state.stopClip();
+  state.playing = false;
+  state.selReading = true;
+  updateButtons();
+  setStatus('Reading selection…');
+  for (const chunk of splitSentences(text)) {
+    if (!state.selReading || gen !== state.playGen) break;
+    let url;
+    try {
+      url = await fetchClip(chunk);
+    } catch (e) {
+      toast(e.message);
+      break;
+    }
+    if (!state.selReading || gen !== state.playGen) break;
+    const how = await playClip(url, null);
+    if (how !== 'ended') break;
+  }
+  if (gen === state.playGen) {
+    state.selReading = false;
+    updateButtons();
+    setStatus('Idle');
+    applyPendingReplace();
+  }
+}
+
+/* ---------------- controls ---------------- */
+
+function updateButtons() {
+  const busy = state.playing || state.selReading;
+  $('#btn-play').textContent = state.playing && !state.paused ? '⏸ Pause' : (state.paused ? '▶ Resume' : '▶ Play');
+  $('#btn-play').disabled = !state.queue.length && !state.playing;
+  $('#btn-stop').disabled = !busy;
+  $('#btn-prev').disabled = !state.playing;
+  $('#btn-next').disabled = !state.playing;
+}
+
+function populateControls() {
+  const speedSel = $('#sel-speed');
+  speedSel.textContent = '';
+  for (const s of SPEEDS) {
+    const o = el('option', '', s + '×');
+    o.value = String(s);
+    speedSel.append(o);
+  }
+  const provSel = $('#sel-provider');
+  provSel.textContent = '';
+  for (const name of Object.keys(state.cfg.providers).sort()) {
+    const o = el('option', '', name);
+    o.value = name;
+    provSel.append(o);
+  }
+
+  if (!state.cfg.providers[settings.provider]) settings.provider = state.cfg.default_provider;
+  if (!SPEEDS.includes(settings.speed)) settings.speed = 1.0;
+  if (!settings.voice) settings.voice = defaultVoiceFor(settings.provider);
+
+  provSel.value = settings.provider;
+  speedSel.value = String(settings.speed);
+  $('#inp-voice').value = settings.voice;
+  $('#chk-follow').checked = settings.follow;
+  $('#chk-autoread').checked = settings.autoread;
+  refreshVoiceOptions();
+
+  provSel.addEventListener('change', () => {
+    settings.provider = provSel.value;
+    settings.voice = savedVoiceFor(settings.provider) || defaultVoiceFor(settings.provider);
+    $('#inp-voice').value = settings.voice;
+    refreshVoiceOptions();
+    saveSettings();
+  });
+  speedSel.addEventListener('change', () => {
+    settings.speed = parseFloat(speedSel.value);
+    if (state.audio) state.audio.playbackRate = settings.speed;
+    saveSettings();
+  });
+  $('#inp-voice').addEventListener('change', () => {
+    settings.voice = $('#inp-voice').value.trim() || defaultVoiceFor(settings.provider);
+    saveVoiceFor(settings.provider, settings.voice);
+    saveSettings();
+  });
+  $('#chk-follow').addEventListener('change', () => { settings.follow = $('#chk-follow').checked; saveSettings(); });
+  $('#chk-autoread').addEventListener('change', () => { settings.autoread = $('#chk-autoread').checked; saveSettings(); });
+
+  $('#btn-play').addEventListener('click', togglePlay);
+  $('#btn-stop').addEventListener('click', stopPlayback);
+  $('#btn-prev').addEventListener('click', () => skip(-1));
+  $('#btn-next').addEventListener('click', () => skip(1));
+}
+
+function defaultVoiceFor(provider) {
+  const pc = state.cfg.providers[provider];
+  return pc ? pc.default_voice : '';
+}
+
+function refreshVoiceOptions() {
+  const list = $('#voice-options');
+  list.textContent = '';
+  const pc = state.cfg.providers[settings.provider];
+  if (!pc) return;
+  for (const v of pc.voices) {
+    const o = document.createElement('option');
+    o.value = v;
+    list.append(o);
+  }
+}
+
+/* ---------------- selection chip + context menu ---------------- */
+
+function selectionInMessages() {
+  const sel = window.getSelection();
+  if (!sel || sel.isCollapsed || !sel.rangeCount) return null;
+  const range = sel.getRangeAt(0);
+  const node = range.commonAncestorContainer;
+  const host = node.nodeType === 1 ? node : node.parentElement;
+  if (!host || !host.closest('#messages')) return null;
+  const text = sel.toString().trim();
+  return text ? { text, range } : null;
+}
+
+function positionChip() {
+  const chip = $('#selchip');
+  const found = selectionInMessages();
+  if (!found) { chip.hidden = true; return; }
+  const rect = found.range.getBoundingClientRect();
+  chip.hidden = false;
+  chip.style.left = Math.max(8, window.scrollX + rect.left) + 'px';
+  chip.style.top = (window.scrollY + rect.bottom + 8) + 'px';
+}
+
+function hideMenu() { $('#ctxmenu').hidden = true; }
+
+function showMenu(x, y, items) {
+  const menu = $('#ctxmenu');
+  menu.textContent = '';
+  for (const item of items) {
+    const b = el('button', '', item.label);
+    b.addEventListener('click', () => { hideMenu(); item.fn(); });
+    menu.append(b);
+  }
+  menu.hidden = false;
+  // Clamp to the viewport once we know the menu's size.
+  const rect = menu.getBoundingClientRect();
+  menu.style.left = Math.min(x, window.innerWidth - rect.width - 8) + 'px';
+  menu.style.top = Math.min(y, window.innerHeight - rect.height - 8) + 'px';
+}
+
+function wireSelectionAndMenu() {
+  document.addEventListener('pointerup', () => setTimeout(positionChip, 1));
+  document.addEventListener('selectionchange', () => {
+    const sel = window.getSelection();
+    if (!sel || sel.isCollapsed) $('#selchip').hidden = true;
+  });
+  $('#selchip').addEventListener('click', () => {
+    const found = selectionInMessages();
+    $('#selchip').hidden = true;
+    if (found) readTextAloud(found.text);
+  });
+
+  document.addEventListener('contextmenu', (e) => {
+    if (!(e.target instanceof Element) || !e.target.closest('#messages')) return;
+    const found = selectionInMessages();
+    const sent = e.target.closest('.sent');
+    if (!found && !sent) return; // nothing useful to offer; keep the native menu
+    e.preventDefault();
+    const items = [];
+    if (found) {
+      items.push({ label: '🔊 Read selection', fn: () => readTextAloud(found.text) });
+      items.push({ label: '📋 Copy selection', fn: () => navigator.clipboard.writeText(found.text).catch(() => {}) });
+    }
+    if (sent) {
+      const i = queueIndexOf(sent);
+      if (i >= 0) items.push({ label: '▶ Read from here', fn: () => playFrom(i) });
+    }
+    showMenu(e.clientX, e.clientY, items);
+  });
+  document.addEventListener('click', (e) => {
+    if (!(e.target instanceof Element) || !e.target.closest('#ctxmenu')) hideMenu();
+  });
+  window.addEventListener('scroll', hideMenu);
+  window.addEventListener('keydown', (e) => { if (e.key === 'Escape') { hideMenu(); $('#selchip').hidden = true; } });
+}
+
+function wireSentenceClicks() {
+  messagesEl.addEventListener('click', (e) => {
+    if (!(e.target instanceof Element)) return;
+    const sent = e.target.closest('.sent');
+    if (!sent) return;
+    const sel = window.getSelection();
+    if (sel && !sel.isCollapsed) return; // the user is selecting, not clicking
+    const i = queueIndexOf(sent);
+    if (i >= 0) playFrom(i);
+  });
+}
+
+function wireKeyboard() {
+  window.addEventListener('keydown', (e) => {
+    const target = e.target;
+    if (target instanceof Element && target.closest('input, select, textarea, button')) return;
+    if (e.code === 'Space') { e.preventDefault(); togglePlay(); }
+    else if (e.key === 'ArrowRight') skip(1);
+    else if (e.key === 'ArrowLeft') skip(-1);
+  });
+}
+
+/* ---------------- live updates ---------------- */
+
+function applyPendingReplace() {
+  if (!state.pendingReplace || state.playing || state.selReading) return;
+  const msgs = state.pendingReplace;
+  state.pendingReplace = null;
+  state.messages = msgs;
+  renderAll(msgs);
+}
+
+async function refreshMessages() {
+  let data;
+  try {
+    data = await (await fetch('/api/messages')).json();
+  } catch (e) {
+    return;
+  }
+  const olds = state.messages;
+  const news = data.messages || [];
+
+  let appendOnly = news.length >= olds.length;
+  if (appendOnly) {
+    for (let i = 0; i < olds.length; i++) {
+      if (olds[i].role !== news[i].role || olds[i].text !== news[i].text) { appendOnly = false; break; }
+    }
+  }
+
+  if (appendOnly && news.length === olds.length) return; // nothing visible changed
+
+  if (!appendOnly) {
+    // The transcript was rewritten (edited turn, compacted session). Redraw,
+    // but never yank the DOM out from under an active read-out.
+    if (state.playing || state.selReading) {
+      state.pendingReplace = news;
+      return;
+    }
+    state.messages = news;
+    renderAll(news);
+    return;
+  }
+
+  const firstNewQueueIdx = state.queue.length;
+  const empty = $('#empty');
+  if (empty) empty.remove();
+  for (let i = olds.length; i < news.length; i++) {
+    messagesEl.append(renderMessage(news[i], i));
+  }
+  state.messages = news;
+  rebuildQueue();
+
+  if (settings.autoread && !state.playing && !state.selReading) {
+    // Start at the first newly arrived assistant sentence, if any.
+    for (let i = firstNewQueueIdx; i < state.queue.length; i++) {
+      const card = state.queue[i].el.closest('.message');
+      if (card && card.classList.contains('assistant')) { playFrom(i); break; }
+    }
+  }
+}
+
+function debounce(fn, ms) {
+  let t = 0;
+  return () => { clearTimeout(t); t = setTimeout(fn, ms); };
+}
+
+function wireEvents() {
+  const es = new EventSource('/api/events');
+  const refresh = debounce(refreshMessages, 300);
+  es.addEventListener('change', refresh);
+  es.addEventListener('load', () => location.reload());
+  // `tts-ctl stop` (and Ctrl+Alt+X) reach the page through this event —
+  // nothing outside the browser can end an <audio> element directly.
+  es.addEventListener('stop', () => stopPlayback());
+  es.onerror = () => setStatus('Reconnecting…'); // EventSource retries by itself
+}
+
+/* ---------------- boot ---------------- */
+
+async function init() {
+  loadSettings();
+  try {
+    state.cfg = await (await fetch('/api/config')).json();
+  } catch (e) {
+    setStatus('Cannot reach the reader server');
+    return;
+  }
+  populateControls();
+  wireSelectionAndMenu();
+  wireSentenceClicks();
+  wireKeyboard();
+
+  const data = await (await fetch('/api/messages')).json();
+  state.messages = data.messages || [];
+  renderAll(state.messages);
+  const parts = (data.transcript || '').split('/');
+  $('#status-session').textContent = parts[parts.length - 1] || '';
+  setStatus('Idle — press Play, click a sentence, or select some text');
+  // Open at the end of the conversation, like the chat window does.
+  window.scrollTo(0, document.body.scrollHeight);
+  wireEvents();
+}
+
+init();
