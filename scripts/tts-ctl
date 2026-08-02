@@ -22,6 +22,8 @@
 #                                      with follow-along highlighting (VS Code
 #                                      tab by default inside VS Code; --browser
 #                                      forces the system web browser)
+#   tts-ctl read --files               list this project's Markdown and text
+#                                      files by folder; click one to read it
 #   tts-ctl selection                  speak the text currently highlighted in
 #                                      any window (X11 primary selection) —
 #                                      works on the Claude Code chat panel too

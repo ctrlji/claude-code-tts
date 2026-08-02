@@ -10,11 +10,14 @@ package main
 import (
 	"flag"
 	"fmt"
+	"net/url"
 	"os"
 	"os/exec"
 	"os/signal"
+	"path/filepath"
 	"runtime"
 	"strconv"
+	"strings"
 	"syscall"
 
 	"github.com/ybouhjira/claude-code-tts/internal/logging"
@@ -28,25 +31,36 @@ func main() {
 	noOpen := flag.Bool("no-open", false, "do not open the page anywhere")
 	browser := flag.Bool("browser", false, "open the system web browser even when running inside VS Code")
 	urlFile := flag.String("url-file", "", "write the page URL to this file once the server is ready")
+	files := flag.Bool("files", false, "open the navigator at this project's Markdown and text files instead of a conversation")
 	flag.Parse()
 
 	if err := logging.Init(); err != nil {
 		fmt.Fprintf(os.Stderr, "warning: file logging unavailable: %v\n", err)
 	}
 
+	// The project directory is needed for both the default transcript lookup
+	// and the -files listing.
+	dir := *projectDir
+	if dir == "" {
+		dir = os.Getenv("CLAUDE_PROJECT_DIR")
+	}
+	if dir == "" {
+		wd, err := os.Getwd()
+		if err != nil {
+			fatal("cannot determine the working directory: %v", err)
+		}
+		dir = wd
+	}
+
+	// -files opens the navigator with this project's document tree expanded,
+	// so no session has to be loaded at all.
+	if *files {
+		openFilesView(dir, *port, *urlFile, *noOpen, *browser)
+		return
+	}
+
 	path := *transcript
 	if path == "" {
-		dir := *projectDir
-		if dir == "" {
-			dir = os.Getenv("CLAUDE_PROJECT_DIR")
-		}
-		if dir == "" {
-			wd, err := os.Getwd()
-			if err != nil {
-				fatal("cannot determine the working directory: %v", err)
-			}
-			dir = wd
-		}
 		found, err := reader.FindLatestTranscript(dir)
 		if err != nil {
 			fatal("%v\nPass the transcript directly: tts-reader -transcript /path/to/session.jsonl", err)
@@ -60,7 +74,7 @@ func main() {
 	// If a reader from this plugin is already running, register the session
 	// with it and reuse the running server instead of starting a second one.
 	// Each session has its own page URL, so other open tabs are undisturbed.
-	if reader.ProbeInstance(*port) {
+	if reuseRunning(*port) {
 		pageURL, err := reader.SwitchTranscript(*port, path)
 		if err != nil {
 			fatal("a reader already runs on port %d but did not accept the transcript: %v", *port, err)
@@ -75,11 +89,76 @@ func main() {
 		fatal("%v", err)
 	}
 	finish(pageURL, *urlFile, *noOpen, *browser)
+	waitForExit(srv)
+}
 
+// reuseRunning decides whether to hand this launch over to a reader that is
+// already listening on the port. It reuses one built from the same binary,
+// and replaces one built from a different binary.
+//
+// Replacing matters because the page and the whole HTTP API are compiled into
+// the binary. A reader started before a rebuild keeps serving the old page,
+// so new work appears to have had no effect — the symptom looks like a broken
+// feature rather than a stale process. Returning false means "the port is
+// yours now": the old reader has already quit.
+func reuseRunning(port int) bool {
+	inst := reader.Probe(port)
+	if !inst.Running {
+		return false
+	}
+	if !inst.Stale() {
+		return true
+	}
+	if reader.RetireInstance(port) {
+		fmt.Fprintln(os.Stderr, "replaced the reader that was running on port", port, "— it came from an older build")
+		return false
+	}
+	// It would not stand down (an older build has no quit endpoint). Reusing
+	// it still shows the conversation, so say what is happening rather than
+	// failing the launch.
+	fmt.Fprintf(os.Stderr, "note: the reader on port %d is from an older build and would not restart; "+
+		"its page may be out of date. Stop it and run this again to pick up the new build.\n", port)
+	return true
+}
+
+// waitForExit blocks until the process is asked to stop, either by a signal or
+// by a newer build taking over the port through /api/quit.
+func waitForExit(srv *reader.Server) {
 	sig := make(chan os.Signal, 1)
 	signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM)
-	<-sig
+	select {
+	case <-sig:
+	case <-srv.Done():
+	}
 	srv.Shutdown()
+}
+
+// openFilesView opens the navigator page with one project's document tree
+// already expanded — the `tts-ctl read --files` entry point. The navigator
+// needs no session, so this reuses a running reader when there is one and
+// otherwise starts a server with nothing loaded. The page itself asks the
+// server for the file listing through /api/docs.
+func openFilesView(dir string, port int, urlFile string, noOpen, forceBrowser bool) {
+	abs, err := filepath.Abs(dir)
+	if err != nil {
+		fatal("cannot resolve the project directory %s: %v", dir, err)
+	}
+	query := "/?docs=" + url.QueryEscape(abs)
+
+	if reuseRunning(port) {
+		finish(fmt.Sprintf("http://127.0.0.1:%d%s", port, query), urlFile, noOpen, forceBrowser)
+		return
+	}
+
+	srv := reader.New(reader.Options{Port: port})
+	pageURL, err := srv.Start()
+	if err != nil {
+		fatal("%v", err)
+	}
+	// Start() reports the bare navigator URL (there is no session); the docs
+	// parameter is what makes it land on this project.
+	finish(strings.TrimSuffix(pageURL, "/")+query, urlFile, noOpen, forceBrowser)
+	waitForExit(srv)
 }
 
 // portFromEnv honors TTS_READER_PORT so the port can be set once in the

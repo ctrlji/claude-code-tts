@@ -9,6 +9,7 @@
   --accent: #7c5cff;
   --user-bg: #eef2ff;
   --code-bg: #f0f1f4;
+  --table-alt: #f8f9fb;
   --sent-hl: #ffe9a8;
   --word-hl: #ffc53d;
   --shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
@@ -30,6 +31,7 @@
     --accent: #9d86ff;
     --user-bg: #232a3d;
     --code-bg: #14161c;
+    --table-alt: #22252c;
     --sent-hl: #4a3f14;
     --word-hl: #8a6d1a;
     --shadow: 0 1px 3px rgba(0, 0, 0, 0.4);
@@ -141,6 +143,26 @@ button.primary { background: var(--accent); border-color: var(--accent); color: 
 .interim p:not(.li):not(.h)::before { content: "• "; color: var(--muted); }
 .interim .h { font-size: 1em; }
 .interim .codeblock { font-style: normal; }
+
+/* ---- Markdown tables ---- */
+/* The wrapper scrolls on its own so a wide table never widens the page. */
+.tablewrap { overflow-x: auto; margin: 0.7rem 0; }
+.md-table {
+  border-collapse: collapse;
+  font-size: 0.95em;
+  line-height: 1.45;
+}
+.md-table th, .md-table td {
+  border: 1px solid var(--border);
+  padding: 0.35rem 0.65rem;
+  text-align: left;
+  vertical-align: top;
+}
+.md-table th { background: var(--code-bg); font-weight: 700; white-space: nowrap; }
+.md-table tbody tr:nth-child(even) { background: var(--table-alt); }
+.md-table th.ta-c, .md-table td.ta-c { text-align: center; }
+.md-table th.ta-r, .md-table td.ta-r { text-align: right; }
+.interim .md-table { font-style: normal; }
 
 .codeblock {
   border: 1px solid var(--border); border-radius: 8px;
@@ -260,6 +282,46 @@ body.nav #nav-link { display: none; }
 .nav-title.untitled { color: var(--muted); font-style: italic; }
 .nav-when { margin-left: auto; color: var(--muted); font-size: 0.78rem; white-space: nowrap; }
 .nav-project .time { overflow: hidden; text-overflow: ellipsis; }
+
+/* ---- per-project document tree ---- */
+/* scroll-margin keeps the sticky top bar from covering the strip when
+   ?docs= scrolls it into view. */
+.nav-docs {
+  margin-top: 0.5rem; border-top: 1px solid var(--border); padding-top: 0.4rem;
+  scroll-margin-top: 4rem;
+}
+.nav-docs-toggle {
+  display: inline-flex; align-items: center; gap: 0.4rem;
+  padding: 0.15rem 0.4rem;
+  font-size: 0.78rem; text-transform: uppercase; letter-spacing: 0.04em;
+  color: var(--muted); background: none; border: none;
+}
+.nav-docs-toggle:hover:not(:disabled) { color: var(--text); border-color: transparent; }
+.nav-caret { font-size: 0.7rem; }
+.nav-docs-body { margin-top: 0.3rem; }
+.nav-docs-bar { display: flex; align-items: center; gap: 0.5rem; margin: 0.2rem 0 0.4rem; }
+.nav-docs-filter { flex: 1; min-width: 0; padding: 0.2rem 0.5rem; }
+.nav-docs-note { color: var(--muted); font-size: 0.72rem; white-space: nowrap; }
+.nav-docs-reload { padding: 0.1rem 0.45rem; line-height: 1.2; }
+.nav-docs-empty { color: var(--muted); font-size: 0.85rem; margin: 0.3rem 0.5rem; }
+.nav-doclist { display: flex; flex-direction: column; gap: 0.05rem; max-height: 22rem; overflow-y: auto; }
+.nav-docdir {
+  margin: 0.45rem 0 0.1rem;
+  font: 0.74rem/1.4 ui-monospace, "Cascadia Code", Menlo, Consolas, monospace;
+  color: var(--muted);
+}
+.nav-doc {
+  display: flex; gap: 0.7rem; align-items: baseline; width: 100%;
+  padding: 0.3rem 0.5rem; border: none; border-radius: 8px;
+  background: none; color: var(--text); text-align: left;
+}
+.nav-doc:hover:not(:disabled) { background: var(--bg); border-color: transparent; }
+.nav-doc-name { font-weight: 600; white-space: nowrap; }
+.nav-doc-title {
+  color: var(--muted); min-width: 0;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.nav-doc-meta { margin-left: auto; color: var(--muted); font-size: 0.75rem; white-space: nowrap; }
 
 /* ---- toast + empty state ---- */
 #toast {
