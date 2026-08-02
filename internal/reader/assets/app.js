@@ -18,6 +18,11 @@ const messagesEl = $('#messages');
 // with its sessions, newest first.
 const SESSION = new URLSearchParams(location.search).get('s') || '';
 
+// ?docs=<project dir> on the navigator opens that project's document tree
+// straight away. `tts-ctl read --files` uses it to land you on the current
+// project's Markdown files.
+const DOCS_FOR = new URLSearchParams(location.search).get('docs') || '';
+
 // api() stamps the session id onto a server call so the server knows which
 // transcript the request is about.
 function api(path) {
@@ -297,6 +302,102 @@ function appendSentences(block, raw) {
   });
 }
 
+/* ---------------- tables ---------------- */
+
+// splitTableRow cuts one Markdown table row into its cells. A pipe only
+// separates cells when it is plain text: pipes inside a backtick code span,
+// and pipes written as \|, belong to the cell they sit in.
+function splitTableRow(line) {
+  const cells = [];
+  let cur = '';
+  let tick = 0; // length of the backtick run that opened the open code span
+  for (let i = 0; i < line.length; i += 1) {
+    const ch = line[i];
+    // \| is a literal pipe everywhere in a row, code spans included.
+    if (ch === '\\' && line[i + 1] === '|') { cur += '|'; i += 1; continue; }
+    if (ch === '`') {
+      let n = 1;
+      while (line[i + n] === '`') n += 1;
+      if (!tick) tick = n;
+      else if (n === tick) tick = 0;
+      cur += '`'.repeat(n);
+      i += n - 1;
+      continue;
+    }
+    if (ch === '|' && !tick) { cells.push(cur); cur = ''; continue; }
+    cur += ch;
+  }
+  cells.push(cur);
+  // Rows may be written with or without the outer pipes. Drop the empty
+  // leading/trailing cells that the outer pipes produce.
+  if (cells.length > 1 && cells[0].trim() === '') cells.shift();
+  if (cells.length > 1 && cells[cells.length - 1].trim() === '') cells.pop();
+  return cells.map((c) => c.trim());
+}
+
+// tableAlignments reads the dashes row under a table header and returns one
+// alignment per column ('' left, 'c' center, 'r' right), or null when the
+// line is not an alignment row — which is also how a table is recognised.
+function tableAlignments(line) {
+  if (typeof line !== 'string' || !line.includes('|')) return null;
+  const cells = splitTableRow(line);
+  if (!cells.length) return null;
+  const align = [];
+  for (const c of cells) {
+    const m = c.match(/^(:?)-+(:?)$/);
+    if (!m) return null;
+    align.push(m[2] ? (m[1] ? 'c' : 'r') : '');
+  }
+  return align;
+}
+
+function alignClass(a) {
+  return a === 'c' ? 'ta-c' : a === 'r' ? 'ta-r' : '';
+}
+
+// renderTable builds a real <table> from a GitHub-style Markdown table: a
+// header row, an alignment row, then body rows until a line that is blank or
+// carries no pipe. It appends the table to body and returns the index of the
+// first line it did not consume. Cells are filled with sentence spans like
+// any paragraph, so clicking a cell reads from there and highlighting works.
+function renderTable(body, lines, start) {
+  const align = tableAlignments(lines[start + 1]) || [];
+  const header = splitTableRow(lines[start]);
+  const cols = Math.max(header.length, align.length);
+
+  const table = el('table', 'md-table');
+  const headRow = el('tr');
+  for (let c = 0; c < cols; c += 1) {
+    const th = el('th', alignClass(align[c]));
+    appendSentences(th, header[c] || '');
+    headRow.append(th);
+  }
+  const thead = el('thead');
+  thead.append(headRow);
+  table.append(thead);
+
+  const tbody = el('tbody');
+  let i = start + 2;
+  for (; i < lines.length; i += 1) {
+    const trimmed = lines[i].trim();
+    if (trimmed === '' || !trimmed.includes('|')) break;
+    const cells = splitTableRow(lines[i]);
+    const tr = el('tr');
+    for (let c = 0; c < cols; c += 1) {
+      const td = el('td', alignClass(align[c]));
+      appendSentences(td, cells[c] || '');
+      tr.append(td);
+    }
+    tbody.append(tr);
+  }
+  if (tbody.childElementCount) table.append(tbody);
+
+  const wrap = el('div', 'tablewrap');
+  wrap.append(table);
+  body.append(wrap);
+  return i;
+}
+
 /* ---------------- code blocks: header, copy, highlighting ---------------- */
 
 // Keyword sets for the languages that actually show up in Claude sessions.
@@ -462,8 +563,8 @@ function renderBody(text) {
   // so a ``` inside a ~~~ block stays part of the code.
   const fenceRe = /^\s*(`{3,}|~{3,})\s*([\w+#.-]*)/;
 
-  for (const rawLine of lines) {
-    const line = rawLine;
+  for (let idx = 0; idx < lines.length; idx += 1) {
+    const line = lines[idx];
     const m = line.match(fenceRe);
     if (code !== null) {
       if (m && m[1][0] === code.fence[0] && m[1].length >= code.fence.length) {
@@ -488,6 +589,13 @@ function renderBody(text) {
       body.append(h);
       continue;
     }
+    // A table is a row of pipes whose next line is the alignment row.
+    if (trimmed.includes('|') && tableAlignments(lines[idx + 1])) {
+      flushPara();
+      idx = renderTable(body, lines, idx) - 1; // the loop steps past the table
+      continue;
+    }
+
     const bullet = trimmed.match(/^[-*+]\s+(.*)$/);
     const numbered = trimmed.match(/^(\d+)[.)]\s+(.*)$/);
     if (bullet || numbered) {
@@ -1166,6 +1274,163 @@ function fmtAgo(ms) {
   return d === 1 ? 'yesterday' : d + ' days ago';
 }
 
+function fmtSize(bytes) {
+  if (bytes < 1024) return bytes + ' B';
+  if (bytes < 1024 * 1024) return Math.round(bytes / 1024) + ' KB';
+  return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
+}
+
+/* ---- per-project document trees ---- */
+
+// Listings are kept per project directory so the navigator's periodic
+// re-render can restore an open tree without asking the server again. The
+// refresh button on the tree header is how you ask for a fresh walk.
+const docsCache = new Map();   // project dir -> listing from /api/docs
+const docsOpen = new Set();    // project dirs whose tree is expanded
+const docsFilter = new Map();  // project dir -> current filter text
+
+async function fetchDocs(dir, force) {
+  if (!force && docsCache.has(dir)) return docsCache.get(dir);
+  const resp = await fetch('/api/docs?dir=' + encodeURIComponent(dir));
+  const data = await resp.json();
+  if (!resp.ok) throw new Error(data.error || 'could not list this project');
+  docsCache.set(dir, data);
+  return data;
+}
+
+// openDoc turns a click on a file into a read-along page. /api/load registers
+// the file as a document session and answers with its page URL, which is the
+// same route `tts-ctl read notes.md` takes.
+async function openDoc(path) {
+  try {
+    const resp = await fetch('/api/load', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ path }),
+    });
+    const data = await resp.json();
+    if (!resp.ok) throw new Error(data.error || 'could not open this file');
+    location.href = data.url;
+  } catch (e) {
+    toast('Could not open ' + path + ' — ' + e.message);
+  }
+}
+
+// renderDocsList fills the expanded tree. Files arrive sorted by directory
+// and then by name, so a directory heading is emitted whenever the directory
+// changes — that single pass is the whole tree.
+function renderDocsList(box, listing, filter) {
+  box.textContent = '';
+  const needle = filter.trim().toLowerCase();
+  const files = (listing.files || []).filter((f) => {
+    if (!needle) return true;
+    return f.rel.toLowerCase().includes(needle) || (f.title || '').toLowerCase().includes(needle);
+  });
+
+  if (!files.length) {
+    box.append(el('p', 'nav-docs-empty', listing.files && listing.files.length
+      ? 'No file matches that filter.'
+      : 'No Markdown or text files found in this project.'));
+    return;
+  }
+
+  let currentDir = null;
+  for (const f of files) {
+    if (f.dir !== currentDir) {
+      currentDir = f.dir;
+      box.append(el('div', 'nav-docdir', currentDir === '' ? './' : currentDir + '/'));
+    }
+    const row = document.createElement('button');
+    row.type = 'button';
+    row.className = 'nav-doc';
+    row.title = f.path;
+    row.append(el('span', 'nav-doc-name', f.name));
+    if (f.title && f.title !== f.name) row.append(el('span', 'nav-doc-title', f.title));
+    row.append(el('span', 'nav-doc-meta', fmtSize(f.size) + ' · ' + fmtAgo(f.modified)));
+    row.addEventListener('click', () => openDoc(f.path));
+    box.append(row);
+  }
+
+  if (listing.truncated) {
+    box.append(el('p', 'nav-docs-empty', 'Listing cut off at ' + (listing.files || []).length + ' files.'));
+  }
+}
+
+// buildDocsSection adds the "Documents" strip to a project card: a toggle, a
+// filter box, and the tree itself. Everything below the toggle is built only
+// once the tree is opened, so the navigator stays cheap for the projects you
+// are not looking at.
+function buildDocsSection(card, proj) {
+  if (!proj.dir) return null; // no known project path, so nothing to walk
+  const section = el('div', 'nav-docs');
+  const toggle = document.createElement('button');
+  toggle.type = 'button';
+  toggle.className = 'nav-docs-toggle';
+  const caret = el('span', 'nav-caret', '▸');
+  toggle.append(caret, el('span', '', 'Documents'));
+  const body = el('div', 'nav-docs-body');
+  body.hidden = true;
+  section.append(toggle, body);
+  card.append(section);
+
+  const paint = (listing) => {
+    body.textContent = '';
+    const bar = el('div', 'nav-docs-bar');
+    const filter = document.createElement('input');
+    filter.type = 'search';
+    filter.className = 'nav-docs-filter';
+    filter.placeholder = 'Filter files…';
+    filter.value = docsFilter.get(proj.dir) || '';
+    const list = el('div', 'nav-doclist');
+    filter.addEventListener('input', () => {
+      docsFilter.set(proj.dir, filter.value);
+      renderDocsList(list, listing, filter.value);
+    });
+    const reload = document.createElement('button');
+    reload.type = 'button';
+    reload.className = 'nav-docs-reload';
+    reload.textContent = '↻';
+    reload.title = 'Rescan this project';
+    reload.addEventListener('click', async () => {
+      try {
+        paint(await fetchDocs(proj.dir, true));
+      } catch (e) {
+        toast(e.message);
+      }
+    });
+    const note = el('span', 'nav-docs-note', listing.git ? 'gitignored files hidden' : '');
+    bar.append(filter, note, reload);
+    body.append(bar, list);
+    renderDocsList(list, listing, filter.value);
+  };
+
+  const open = async () => {
+    docsOpen.add(proj.dir);
+    caret.textContent = '▾';
+    body.hidden = false;
+    if (!docsCache.has(proj.dir)) body.append(el('p', 'nav-docs-empty', 'Scanning…'));
+    try {
+      paint(await fetchDocs(proj.dir, false));
+    } catch (e) {
+      body.textContent = '';
+      body.append(el('p', 'nav-docs-empty', e.message));
+    }
+  };
+
+  toggle.addEventListener('click', () => {
+    if (docsOpen.has(proj.dir)) {
+      docsOpen.delete(proj.dir);
+      caret.textContent = '▸';
+      body.hidden = true;
+      return;
+    }
+    open();
+  });
+
+  if (docsOpen.has(proj.dir)) open();
+  return section;
+}
+
 function renderNavigator(projects) {
   messagesEl.textContent = '';
   if (!projects.length) {
@@ -1174,6 +1439,7 @@ function renderNavigator(projects) {
     messagesEl.append(p);
     return;
   }
+  let target = null; // the ?docs= project's strip, scrolled to once built
   for (const proj of projects) {
     const card = el('article', 'message nav-project');
     const head = el('div', 'msg-head');
@@ -1190,7 +1456,22 @@ function renderNavigator(projects) {
       list.append(a);
     }
     card.append(list);
+    const docs = buildDocsSection(card, proj);
     messagesEl.append(card);
+    if (docs && proj.dir === DOCS_FOR) target = docs;
+  }
+  // Scroll only once the whole list exists: scrolling mid-loop is undone by
+  // the cards appended after it. The document strip is the target rather than
+  // the card, because a project with many sessions pushes it off screen.
+  if (target) {
+    requestAnimationFrame(() => target.scrollIntoView({ block: 'start' }));
+  } else if (DOCS_FOR) {
+    // Asked for a project the navigator does not know. That happens when the
+    // directory has never had a Claude Code session, so nothing records it as
+    // a project — say so instead of showing a list that looks unrelated.
+    const note = el('p', 'nav-docs-empty', 'No Claude Code sessions have been recorded for ' + DOCS_FOR +
+      ', so its documents are not listed here. Open a session in that project first.');
+    messagesEl.prepend(note);
   }
 }
 
@@ -1216,16 +1497,20 @@ async function refreshNavigator() {
   }
   const projects = data.projects || [];
   const key = navKey(projects);
-  if (key !== lastNavKey) {
+  // Rebuilding the cards would steal focus from a filter box mid-word, so a
+  // refresh waits while you are typing in one.
+  const typing = document.activeElement && document.activeElement.classList.contains('nav-docs-filter');
+  if (key !== lastNavKey && !typing) {
     lastNavKey = key;
     renderNavigator(projects);
   }
-  setStatus('Pick a session to read along');
+  setStatus('Pick a session to read along, or open a project’s documents');
 }
 
 async function initNavigator() {
   document.body.classList.add('nav');
   setPageTitle('Claude Code — Sessions');
+  if (DOCS_FOR) docsOpen.add(DOCS_FOR);
   await refreshNavigator();
   // Keep the list roughly current: server events cover the sessions it
   // already follows, and the slow timer picks up everything else (session

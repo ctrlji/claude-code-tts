@@ -278,6 +278,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/config", s.handleConfig)
 	mux.HandleFunc("/api/messages", s.handleMessages)
 	mux.HandleFunc("/api/sessions", s.handleSessions)
+	mux.HandleFunc("/api/docs", s.handleDocs)
 	mux.HandleFunc("/api/tts", s.handleTTS)
 	mux.HandleFunc("/api/load", s.handleLoad)
 	mux.HandleFunc("/api/stop", s.handleStop)
@@ -447,6 +448,57 @@ func (s *Server) handleSessions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, map[string]any{"projects": projects})
+}
+
+// handleDocs lists the readable text files inside one project directory, for
+// the navigator's per-project document tree.
+//
+// The directory is not taken on trust. Only a directory that is already a
+// known Claude Code project — one recorded in a session transcript's cwd —
+// can be listed, so a page cannot use this endpoint to enumerate arbitrary
+// parts of the filesystem.
+func (s *Server) handleDocs(w http.ResponseWriter, r *http.Request) {
+	dir := strings.TrimSpace(r.URL.Query().Get("dir"))
+	if dir == "" {
+		writeJSONError(w, http.StatusBadRequest, "dir is required")
+		return
+	}
+	if !s.isKnownProjectDir(dir) {
+		writeJSONError(w, http.StatusForbidden, "not a known project directory")
+		return
+	}
+	listing, err := ListProjectDocs(dir)
+	if err != nil {
+		writeJSONError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	writeJSON(w, listing)
+}
+
+// isKnownProjectDir reports whether dir is the project directory of one of
+// this machine's Claude Code projects.
+func (s *Server) isKnownProjectDir(dir string) bool {
+	abs, err := filepath.Abs(dir)
+	if err != nil {
+		return false
+	}
+	projects, err := listProjectsIn(s.projectsRoot)
+	if err != nil {
+		return false
+	}
+	for _, p := range projects {
+		if p.Dir == "" {
+			continue
+		}
+		known, err := filepath.Abs(p.Dir)
+		if err != nil {
+			continue
+		}
+		if known == abs {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *Server) handleTTS(w http.ResponseWriter, r *http.Request) {

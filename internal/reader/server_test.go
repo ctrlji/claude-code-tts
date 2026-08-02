@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -429,5 +430,58 @@ func TestIndexServesPageWithCSP(t *testing.T) {
 	page, _ := io.ReadAll(resp.Body)
 	if !bytes.Contains(page, []byte("Read along")) {
 		t.Error("index page does not look like the read-along view")
+	}
+}
+
+// TestDocsEndpoint checks the project-document listing, including its access
+// rule: only a directory that is already a known Claude Code project can be
+// listed, so the endpoint cannot be used to browse the filesystem.
+func TestDocsEndpoint(t *testing.T) {
+	projectDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(projectDir, "README.md"), []byte("# Hello\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// A projects root whose one session records projectDir as its cwd, which
+	// is what makes that directory "known".
+	root := t.TempDir()
+	dir := filepath.Join(root, "-a-project")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	line := `{"type":"user","cwd":"` + projectDir + `","message":{"role":"user","content":"Hi."}}` + "\n"
+	if err := os.WriteFile(filepath.Join(dir, "sess.jsonl"), []byte(line), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	ts, _ := newTestReaderWithRoot(t, &fakeSynth{audio: []byte("MP3")}, root)
+
+	var listing DocListing
+	getJSON(t, ts.URL+"/api/docs?dir="+url.QueryEscape(projectDir), &listing)
+	if len(listing.Files) != 1 || listing.Files[0].Name != "README.md" {
+		t.Fatalf("listing = %+v, want one README.md", listing.Files)
+	}
+	if listing.Files[0].Title != "Hello" {
+		t.Errorf("title = %q, want %q", listing.Files[0].Title, "Hello")
+	}
+
+	// An unrelated directory is refused even though it exists and is readable.
+	resp, err := http.Get(ts.URL + "/api/docs?dir=" + url.QueryEscape(t.TempDir()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("unknown directory: status %d, want %d", resp.StatusCode, http.StatusForbidden)
+	}
+
+	// So is a missing dir parameter.
+	resp2, err := http.Get(ts.URL + "/api/docs")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp2.Body.Close()
+	if resp2.StatusCode != http.StatusBadRequest {
+		t.Fatalf("missing dir: status %d, want %d", resp2.StatusCode, http.StatusBadRequest)
 	}
 }

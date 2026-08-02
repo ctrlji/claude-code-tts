@@ -284,10 +284,11 @@ Editing the config file is fine for your defaults, but for quick changes during 
 | `/tts-sentence` | Go back to speaking only the first sentence |
 | `/tts-off` | Stop automatic speaking |
 | `/tts-last` | Read the last response aloud now (add `--with-code` to include code) |
-| `/tts-read` | Open the read-along browser view of this conversation (or of a Markdown/text file: `/tts-read PATH`) |
+| `/tts-read` | Open the read-along browser view of this conversation (or of a Markdown/text file: `/tts-read PATH`; or this project's file list: `/tts-read --files`) |
 | `/tts mode full\|sentence\|off` | Set the auto-speak mode |
 | `/tts file PATH` | Read a text or Markdown file aloud now |
 | `/tts read [PATH]` | Same as `/tts-read`; optionally name a transcript or a Markdown/text file |
+| `/tts read --files` | List this project's Markdown and text files by folder; click one to read it |
 | `/tts say TEXT` | Speak some text right now |
 | `/tts selection` | Speak the text currently highlighted in any window (see below) |
 | `/tts stop` | Stop any read-out that is currently playing |
@@ -396,6 +397,11 @@ Notes on how it works:
 - Opening the page without a session id (just `http://127.0.0.1:8898/`, or the **☰ Sessions** link in the top bar) shows the **navigator**: every Claude Code project on the machine with its sessions, newest first, each a link into the read-along view. Old sessions work the same as live ones.
 - Running `/tts-read` again reuses the already-open reader server instead of starting a second one. Pass a path (`/tts-read ~/.claude/projects/<project>/<session>.jsonl`) to read a specific transcript file directly.
 - **Any Markdown or plain-text file works too**: `/tts-read notes.md` (or `tts-ctl read notes.md`) opens the file in the same read-along page, with the identical follow experience — sentence and word highlighting, follow scrolling, click-to-read, selection reading, and code blocks that are shown but skipped by continuous reading. The page live-reloads when you save the file. Unlike `/tts file`, which plays audio through the native player with nothing to look at, this gives the full visual read-along. One note: the page URL for a file only survives as long as the reader server runs; after a restart, run the command again.
+- **Browse a project's documents instead of typing a path**: `/tts-read --files` (or `tts-ctl read --files`) opens the navigator with the current project's **Documents** strip expanded — every Markdown and plain-text file in the project, grouped by the folder it lives in, with each file's first heading beside its name. Click one and it opens in the read-along view. Every project card in the navigator has the same strip, so you can reach another project's documents without leaving the page. Details worth knowing:
+  - In a git repository the list comes from git itself, so `.gitignore` is honoured and a dependency's `README.md` inside `node_modules` never appears. Files you have written but not yet committed are still listed. Outside a repository the reader walks the tree instead and skips the usual noisy directories (`node_modules`, `vendor`, `dist`, `build`, hidden directories, and similar).
+  - The filter box narrows by path or by heading, which is the fast way through a repository with many documents.
+  - The listing is cached per project while the page is open. The **↻** button rescans when you have added a file.
+  - The endpoint behind the strip (`/api/docs`) only lists a directory that is already a known Claude Code project, so the page cannot be used to browse the rest of your filesystem.
 - VS Code offers no command-line way to run a workbench command in an already-running window, so a plain shell cannot open the Simple Browser by itself. Without the companion extension (next section) the printed link is a one-click open; with it, the open is fully automatic.
 
 ### The companion VS Code extension (right-click in the real chat + zero-click opens)
@@ -485,6 +491,8 @@ claude-code-tts/
 │   │   └── player.go         # Cross-platform audio playback
 │   ├── reader/
 │   │   ├── transcript.go     # Session transcript (JSONL) parser
+│   │   ├── document.go       # Markdown/text files as read-along documents
+│   │   ├── docs.go           # Per-project Markdown/text file discovery
 │   │   ├── server.go         # Loopback web server for the read-along view
 │   │   └── assets/           # The read-along page (HTML/CSS/JS, embedded)
 │   ├── server/

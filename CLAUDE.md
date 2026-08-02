@@ -94,7 +94,27 @@ make install            # Installs to ~/.claude/plugins/claude-code-tts/
 │        italic bullets ("Notes as bullets" toggle, default   │
 │        on); headings render at real h1-h6 sizes, and inline │
 │        markdown (code chips, bold, italic, links) renders   │
-│        styled while the spoken text stays clean             │
+│        styled while the spoken text stays clean. GitHub-    │
+│        style tables become real <table> elements (column    │
+│        alignment from the :---: row, \| and pipes inside    │
+│        code spans kept in their cell, wide tables scroll in │
+│        their own box); each cell holds sentence spans, so   │
+│        cells are clickable and highlight like any paragraph │
+│      - docs.go: per-project document discovery for the      │
+│        navigator. ListProjectDocs walks a project dir for   │
+│        .md/.markdown/.mdx/.txt files; in a git repo the     │
+│        list comes from `git ls-files --cached --others      │
+│        --exclude-standard` so .gitignore is honoured, else  │
+│        a bounded walk with a deny-list (node_modules,       │
+│        vendor, dist, dotdirs…). Files carry their first     │
+│        heading as a title. /api/docs?dir=… serves it and    │
+│        REFUSES any dir that is not a known project dir (a   │
+│        cwd recorded in some session), so the page cannot    │
+│        browse the filesystem. The navigator shows it as a   │
+│        "Documents" strip per project (lazy, filterable);    │
+│        clicking a file POSTs /api/load and opens it.        │
+│        `tts-ctl read --files` opens /?docs=<project dir>,   │
+│        which expands that project's strip on load           │
 │      - document.go: serves any Markdown/plain-text file     │
 │        through the same page (`tts-ctl read notes.md`): the │
 │        file becomes one "doc"-role message, id "doc-<hash>",│

@@ -9,6 +9,9 @@
 #   tts-read PATH               open a session transcript (.jsonl), or any
 #                               Markdown/text file to read it with the same
 #                               follow-along highlighting
+#   tts-read --files            list this project's Markdown and text files
+#                               in the navigator, grouped by folder; click one
+#                               to read it
 #   tts-read --browser          open in the system web browser
 #
 # Inside VS Code the page stays in the editor: the printed URL opens as a
@@ -31,14 +34,24 @@ usage() { grep -E '^#( |$)' "$0" | sed -E 's/^# ?//'; }
 args=()
 want_browser=0
 no_open=0
+want_files=0
 for a in "$@"; do
     case "$a" in
         -h | --help) usage; exit 0 ;;
         --browser) args+=(-browser); want_browser=1 ;;
         --no-open) args+=(-no-open); no_open=1 ;;
+        --files | files) args+=(-files); want_files=1 ;;
         *) args+=(-transcript "$a") ;;
     esac
 done
+
+# The file listing is scoped to a project directory, and the reader resolves
+# that from CLAUDE_PROJECT_DIR or its own working directory. Inside a Claude
+# Code session the former is set; from a plain shell the latter is the one
+# that matters, so pass it explicitly rather than relying on nohup's cwd.
+if [ "$want_files" = 1 ]; then
+    args+=(-project-dir "${CLAUDE_PROJECT_DIR:-$PWD}")
+fi
 
 url_file="$PLUGIN_ROOT/reader.url"
 open_flag="$PLUGIN_ROOT/reader.open"
@@ -62,12 +75,15 @@ if [ ! -s "$url_file" ]; then
 fi
 
 url="$(cat "$url_file")"
+what="read-along view"
+[ "$want_files" = 1 ] && what="project document list"
+
 if [ "$no_open" = 1 ]; then
     # --no-open means exactly that: no browser, and no flag for the VS Code
     # extension either — just report where the page is.
-    echo "read-along view is ready at $url"
+    echo "$what is ready at $url"
 elif [ "$want_browser" = 1 ]; then
-    echo "read-along view opened in your web browser at $url"
+    echo "$what opened in your web browser at $url"
 elif [ "${TERM_PROGRAM:-}" = "vscode" ] || [ -n "${VSCODE_PID:-}" ]; then
     # Ask the companion VS Code extension (claude-code-tts-bridge) to open the
     # view as an editor tab. It watches this flag file; without the extension
@@ -77,7 +93,7 @@ elif [ "${TERM_PROGRAM:-}" = "vscode" ] || [ -n "${VSCODE_PID:-}" ]; then
     # that has this directory open consumes the flag — otherwise the tab would
     # pop up in whichever window happened to poll first.
     printf '%s\n%s\n' "$url" "${CLAUDE_PROJECT_DIR:-$PWD}" > "$open_flag"
-    echo "read-along view is ready at $url — it should open inside VS Code (click the link if not)"
+    echo "$what is ready at $url — it should open inside VS Code (click the link if not)"
 else
-    echo "read-along view opened at $url (a browser tab should appear)"
+    echo "$what opened at $url (a browser tab should appear)"
 fi

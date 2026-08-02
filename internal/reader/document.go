@@ -71,21 +71,68 @@ func ParseDocument(path string) ([]Message, error) {
 // DocumentTitle names a document for the page header and tab title: the first
 // Markdown heading if one appears near the top, else the filename.
 func DocumentTitle(path string) string {
-	f, err := os.Open(path)
-	if err != nil {
-		return filepath.Base(path)
-	}
-	defer f.Close()
-	buf := make([]byte, 8192)
-	n, _ := f.Read(buf)
-	for _, line := range strings.Split(string(buf[:n]), "\n") {
-		trimmed := strings.TrimSpace(line)
-		if after, ok := strings.CutPrefix(trimmed, "#"); ok {
-			title := strings.TrimSpace(strings.TrimLeft(after, "#"))
-			if title != "" {
-				return title
-			}
-		}
+	if title := firstHeading(path); title != "" {
+		return title
 	}
 	return filepath.Base(path)
+}
+
+// headingScanBytes is how much of a file is read looking for its first
+// heading. A title that has not appeared in the first few kilobytes is not a
+// title.
+const headingScanBytes = 8192
+
+// firstHeading returns a file's first Markdown heading, or "" when it has
+// none near the top. The project-docs listing uses the empty result to fall
+// back to the file name, which is why this is separate from DocumentTitle.
+func firstHeading(path string) string {
+	f, err := os.Open(path)
+	if err != nil {
+		return ""
+	}
+	defer f.Close()
+	buf := make([]byte, headingScanBytes)
+	n, _ := f.Read(buf)
+	if n <= 0 {
+		return ""
+	}
+	fence := ""
+	for _, line := range strings.Split(string(buf[:n]), "\n") {
+		trimmed := strings.TrimSpace(line)
+		// A "# " inside a fenced code block is a shell comment, not a title.
+		if marker := fenceMarker(trimmed); marker != "" {
+			if fence == "" {
+				fence = marker
+			} else if marker[0] == fence[0] && len(marker) >= len(fence) {
+				fence = ""
+			}
+			continue
+		}
+		if fence != "" {
+			continue
+		}
+		after, ok := strings.CutPrefix(trimmed, "#")
+		if !ok {
+			continue
+		}
+		if title := strings.TrimSpace(strings.TrimLeft(after, "#")); title != "" {
+			return title
+		}
+	}
+	return ""
+}
+
+// fenceMarker returns the backtick or tilde run that opens or closes a code
+// fence on this line, or "" when the line is not a fence.
+func fenceMarker(trimmed string) string {
+	for _, ch := range []byte{'`', '~'} {
+		n := 0
+		for n < len(trimmed) && trimmed[n] == ch {
+			n++
+		}
+		if n >= 3 {
+			return trimmed[:n]
+		}
+	}
+	return ""
 }

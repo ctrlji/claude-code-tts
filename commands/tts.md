@@ -1,6 +1,6 @@
 ---
 description: Control the text-to-speech experience — mode, voice, read the last response, read a file, and more
-argument-hint: mode full|sentence|off | last | file PATH | read [PATH] | say TEXT | selection | stop | speed RATE | provider NAME | voice NAME | code include|exclude | markdown keep|strip | cap N|none | show | reset
+argument-hint: mode full|sentence|off | last | file PATH | read [PATH|--files] | say TEXT | selection | stop | speed RATE | provider NAME | voice NAME | code include|exclude | markdown keep|strip | cap N|none | show | reset
 allowed-tools: Bash(~/.claude/plugins/claude-code-tts/bin/tts-ctl:*)
 ---
 
@@ -15,6 +15,7 @@ For reference, the subcommands are:
 - `last` (add `--with-code` or `--raw`) — read the last response aloud now
 - `file PATH` (add `--with-code`) — read a text or Markdown file aloud now
 - `read [PATH] [--browser]` — open the read-along view: the conversation is read aloud with the current sentence and word highlighted, and selected text can be read via the right-click menu. Inside VS Code it opens as an editor tab (click the printed link); `--browser` forces the system web browser
+- `read --files` — list this project's Markdown and text files, grouped by folder, in the navigator; click one to read it with the same follow-along highlighting
 - `say TEXT` — speak arbitrary text now
 - `selection` — speak the text currently highlighted in any window (X11 primary selection; works on the Claude Code chat panel)
 - `stop` — stop any read-out currently in progress
