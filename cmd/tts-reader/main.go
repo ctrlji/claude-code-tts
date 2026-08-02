@@ -74,7 +74,7 @@ func main() {
 	// If a reader from this plugin is already running, register the session
 	// with it and reuse the running server instead of starting a second one.
 	// Each session has its own page URL, so other open tabs are undisturbed.
-	if reader.ProbeInstance(*port) {
+	if reuseRunning(*port) {
 		pageURL, err := reader.SwitchTranscript(*port, path)
 		if err != nil {
 			fatal("a reader already runs on port %d but did not accept the transcript: %v", *port, err)
@@ -89,10 +89,47 @@ func main() {
 		fatal("%v", err)
 	}
 	finish(pageURL, *urlFile, *noOpen, *browser)
+	waitForExit(srv)
+}
 
+// reuseRunning decides whether to hand this launch over to a reader that is
+// already listening on the port. It reuses one built from the same binary,
+// and replaces one built from a different binary.
+//
+// Replacing matters because the page and the whole HTTP API are compiled into
+// the binary. A reader started before a rebuild keeps serving the old page,
+// so new work appears to have had no effect — the symptom looks like a broken
+// feature rather than a stale process. Returning false means "the port is
+// yours now": the old reader has already quit.
+func reuseRunning(port int) bool {
+	inst := reader.Probe(port)
+	if !inst.Running {
+		return false
+	}
+	if !inst.Stale() {
+		return true
+	}
+	if reader.RetireInstance(port) {
+		fmt.Fprintln(os.Stderr, "replaced the reader that was running on port", port, "— it came from an older build")
+		return false
+	}
+	// It would not stand down (an older build has no quit endpoint). Reusing
+	// it still shows the conversation, so say what is happening rather than
+	// failing the launch.
+	fmt.Fprintf(os.Stderr, "note: the reader on port %d is from an older build and would not restart; "+
+		"its page may be out of date. Stop it and run this again to pick up the new build.\n", port)
+	return true
+}
+
+// waitForExit blocks until the process is asked to stop, either by a signal or
+// by a newer build taking over the port through /api/quit.
+func waitForExit(srv *reader.Server) {
 	sig := make(chan os.Signal, 1)
 	signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM)
-	<-sig
+	select {
+	case <-sig:
+	case <-srv.Done():
+	}
 	srv.Shutdown()
 }
 
@@ -108,7 +145,7 @@ func openFilesView(dir string, port int, urlFile string, noOpen, forceBrowser bo
 	}
 	query := "/?docs=" + url.QueryEscape(abs)
 
-	if reader.ProbeInstance(port) {
+	if reuseRunning(port) {
 		finish(fmt.Sprintf("http://127.0.0.1:%d%s", port, query), urlFile, noOpen, forceBrowser)
 		return
 	}
@@ -121,11 +158,7 @@ func openFilesView(dir string, port int, urlFile string, noOpen, forceBrowser bo
 	// Start() reports the bare navigator URL (there is no session); the docs
 	// parameter is what makes it land on this project.
 	finish(strings.TrimSuffix(pageURL, "/")+query, urlFile, noOpen, forceBrowser)
-
-	sig := make(chan os.Signal, 1)
-	signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM)
-	<-sig
-	srv.Shutdown()
+	waitForExit(srv)
 }
 
 // portFromEnv honors TTS_READER_PORT so the port can be set once in the

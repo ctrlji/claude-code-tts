@@ -124,6 +124,14 @@ make install            # Installs to ~/.claude/plugins/claude-code-tts/
 │        web page (assets/), /api/tts synthesis endpoint,     │
 │        SSE live updates as the transcript grows, and        │
 │        single-instance reuse via /api/health + /api/load    │
+│      - version.go: BuildID() hashes the running executable  │
+│        at startup; /api/health reports it. The reader keeps │
+│        running between launches, so without this a rebuild  │
+│        looks like it did nothing: the launcher would hand   │
+│        the browser back to a process still serving the old  │
+│        page and the old API. reuseRunning() reuses a server │
+│        with a matching fingerprint and retires a mismatched │
+│        one through POST /api/quit, then starts fresh        │
 │      - MULTI-SESSION: one server, many sessions. Each page  │
 │        binds to a session via its /?s=<session-id> URL;     │
 │        /api/load registers sessions (never repoints open    │

@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/ybouhjira/claude-code-tts/internal/tts"
 )
@@ -198,6 +199,7 @@ func TestHealthAndLoad(t *testing.T) {
 	var health struct {
 		App      string `json:"app"`
 		Sessions int    `json:"sessions"`
+		Build    string `json:"build"`
 	}
 	getJSON(t, ts.URL+"/api/health", &health)
 	if health.App != healthApp {
@@ -205,6 +207,11 @@ func TestHealthAndLoad(t *testing.T) {
 	}
 	if health.Sessions != 1 {
 		t.Errorf("sessions = %d, want 1", health.Sessions)
+	}
+	// The build fingerprint is what lets a rebuilt binary notice that the
+	// reader holding the port is an older one.
+	if health.Build != BuildID() {
+		t.Errorf("build = %q, want %q", health.Build, BuildID())
 	}
 
 	other := filepath.Join(t.TempDir(), "other.jsonl")
@@ -483,5 +490,69 @@ func TestDocsEndpoint(t *testing.T) {
 	defer resp2.Body.Close()
 	if resp2.StatusCode != http.StatusBadRequest {
 		t.Fatalf("missing dir: status %d, want %d", resp2.StatusCode, http.StatusBadRequest)
+	}
+}
+
+// A rebuilt binary takes the port back from the reader that was already
+// running, instead of handing the browser to a server that still serves the
+// old page. These two tests cover the halves of that handover: deciding the
+// running reader is stale, and asking it to quit.
+
+func TestInstanceStale(t *testing.T) {
+	cases := []struct {
+		name string
+		inst Instance
+		want bool
+	}{
+		{"nothing running", Instance{}, false},
+		{"same build", Instance{Running: true, Build: BuildID()}, false},
+		{"different build", Instance{Running: true, Build: "0123456789ab"}, true},
+		{"no fingerprint at all", Instance{Running: true}, true},
+	}
+	for _, c := range cases {
+		if got := c.inst.Stale(); got != c.want {
+			t.Errorf("%s: Stale() = %v, want %v", c.name, got, c.want)
+		}
+	}
+}
+
+func TestQuitShutsTheServerDown(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "session.jsonl")
+	if err := os.WriteFile(path, []byte(miniTranscript), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	s := New(Options{Transcript: path, ProjectsRoot: t.TempDir()})
+	ts := httptest.NewServer(s.Handler())
+	defer ts.Close()
+
+	// A GET must not be able to kill the reader; only the launcher's POST.
+	resp, err := http.Get(ts.URL + "/api/quit")
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusMethodNotAllowed {
+		t.Fatalf("GET /api/quit: status %d, want %d", resp.StatusCode, http.StatusMethodNotAllowed)
+	}
+	select {
+	case <-s.Done():
+		t.Fatal("a GET shut the server down")
+	default:
+	}
+
+	resp, err = http.Post(ts.URL+"/api/quit", "application/json", strings.NewReader("{}"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("POST /api/quit: status %d, want 200", resp.StatusCode)
+	}
+	// The handler answers first and shuts down just after, so Done closes a
+	// moment later rather than immediately.
+	select {
+	case <-s.Done():
+	case <-time.After(2 * time.Second):
+		t.Fatal("the server did not shut down after /api/quit")
 	}
 }

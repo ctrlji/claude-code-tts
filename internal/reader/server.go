@@ -230,6 +230,13 @@ func speedFromEnv() float64 {
 // Start binds the loopback listener and begins serving in the background.
 // It returns the page URL.
 func (s *Server) Start() (string, error) {
+	// Fingerprint this binary now, while it is certainly the one on disk.
+	// Installing a new build replaces the file at the same path, so a server
+	// that waited until its first health request would hash its replacement
+	// and report the newer build's fingerprint as its own — exactly the case
+	// the fingerprint exists to catch.
+	BuildID()
+
 	ln, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", s.port))
 	if err != nil && s.port != 0 {
 		// The launcher probes for an existing reader before starting a new
@@ -264,6 +271,12 @@ func (s *Server) Shutdown() {
 	}
 }
 
+// Done is closed when the server shuts down, whether that came from a signal
+// or from a /api/quit request. The command waits on it so a handover to a
+// newer binary actually ends this process instead of leaving it parked on a
+// closed listener.
+func (s *Server) Done() <-chan struct{} { return s.stop }
+
 // Handler returns the complete HTTP handler, wrapped in the loopback-only
 // checks. Exported so tests can drive the server through httptest.
 func (s *Server) Handler() http.Handler {
@@ -282,6 +295,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/tts", s.handleTTS)
 	mux.HandleFunc("/api/load", s.handleLoad)
 	mux.HandleFunc("/api/stop", s.handleStop)
+	mux.HandleFunc("/api/quit", s.handleQuit)
 	mux.HandleFunc("/api/events", s.handleEvents)
 	return s.guard(mux)
 }
@@ -355,7 +369,15 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	}
 	count := len(s.sessions)
 	s.mu.Unlock()
-	writeJSON(w, map[string]any{"app": healthApp, "transcript": transcript, "sessions": count})
+	writeJSON(w, map[string]any{
+		"app":        healthApp,
+		"transcript": transcript,
+		"sessions":   count,
+		// The build fingerprint lets a newly launched binary tell "the running
+		// reader is my own build, reuse it" apart from "the running reader is
+		// an older build that would serve a stale page".
+		"build": BuildID(),
+	})
 }
 
 // providerConfig is what the page needs to offer a provider in its pickers.
@@ -599,6 +621,25 @@ func (s *Server) handleStop(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, map[string]any{"ok": true})
 }
 
+// handleQuit shuts this reader down so a newer build of the binary can take
+// the port. Only the launcher calls it, and only after /api/health showed a
+// different build fingerprint. Open pages lose their connection, which is the
+// point: they are showing a stale version of the page.
+func (s *Server) handleQuit(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeJSONError(w, http.StatusMethodNotAllowed, "POST only")
+		return
+	}
+	writeJSON(w, map[string]any{"ok": true})
+	// Shut down after the response has gone out, so the caller learns the
+	// request succeeded rather than seeing the connection drop.
+	go func() {
+		time.Sleep(100 * time.Millisecond)
+		logging.Debug("reader: quitting on request; a newer build is taking the port")
+		s.Shutdown()
+	}()
+}
+
 // handleEvents is the server-sent-events stream. The page listens here and
 // refetches messages whenever the transcript changes, which is what makes the
 // view follow the live session.
@@ -742,22 +783,71 @@ func writeJSONError(w http.ResponseWriter, code int, msg string) {
 	}
 }
 
-// ProbeInstance reports whether a reader from this plugin is already
-// listening on the given port.
-func ProbeInstance(port int) bool {
+// Instance describes the reader already listening on a port, if there is one.
+type Instance struct {
+	Running bool   // a reader from this plugin answered on the port
+	Build   string // its build fingerprint; empty when it predates BuildID
+}
+
+// Stale reports whether the running reader came from a different build of the
+// binary than the one asking. An unknown fingerprint on either side counts as
+// stale: a reader old enough not to report one is certainly older than this
+// code, and a caller that cannot hash itself cannot claim a match.
+func (i Instance) Stale() bool {
+	if !i.Running {
+		return false
+	}
+	return i.Build == "" || i.Build != BuildID()
+}
+
+// Probe asks the given port whether a reader from this plugin is listening
+// there, and which build it is.
+func Probe(port int) Instance {
 	client := &http.Client{Timeout: 700 * time.Millisecond}
 	resp, err := client.Get(fmt.Sprintf("http://127.0.0.1:%d/api/health", port))
 	if err != nil {
-		return false
+		return Instance{}
 	}
 	defer resp.Body.Close()
 	var h struct {
-		App string `json:"app"`
+		App   string `json:"app"`
+		Build string `json:"build"`
 	}
 	if json.NewDecoder(resp.Body).Decode(&h) != nil {
+		return Instance{}
+	}
+	if h.App != healthApp {
+		return Instance{}
+	}
+	return Instance{Running: true, Build: h.Build}
+}
+
+// ProbeInstance reports whether a reader from this plugin is already
+// listening on the given port.
+func ProbeInstance(port int) bool { return Probe(port).Running }
+
+// RetireInstance asks the reader on the given port to quit and waits for the
+// port to come free, so this process can start a server there instead. It
+// reports whether the port ended up free.
+func RetireInstance(port int) bool {
+	client := &http.Client{Timeout: 2 * time.Second}
+	resp, err := client.Post(fmt.Sprintf("http://127.0.0.1:%d/api/quit", port), "application/json", strings.NewReader("{}"))
+	if err != nil {
+		// An older reader has no /api/quit endpoint, so it cannot be asked to
+		// stand down; the caller falls back to reusing it.
 		return false
 	}
-	return h.App == healthApp
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return false
+	}
+	for i := 0; i < 40; i++ { // up to 4 seconds
+		time.Sleep(100 * time.Millisecond)
+		if !ProbeInstance(port) {
+			return true
+		}
+	}
+	return false
 }
 
 // SwitchTranscript registers a transcript with an already-running reader, so
