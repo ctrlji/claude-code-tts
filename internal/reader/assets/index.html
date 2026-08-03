@@ -23,9 +23,11 @@
       <select id="sel-provider"></select>
     </label>
     <label>Voice
-      <input id="inp-voice" list="voice-options" size="11" spellcheck="false">
+      <select id="sel-voice"></select>
+      <input id="inp-voice" size="13" spellcheck="false" hidden
+             placeholder="voice name or ID"
+             title="A voice name, an ElevenLabs voice ID, or a Kokoro blend such as af_bella(2)+af_sky(1)">
     </label>
-    <datalist id="voice-options"></datalist>
     <label class="toggle" title="Keep the sentence being read in view">
       <input type="checkbox" id="chk-follow" checked> Follow
     </label>

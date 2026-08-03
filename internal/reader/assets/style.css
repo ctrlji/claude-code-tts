@@ -75,6 +75,11 @@ body {
   border: 1px solid var(--border); border-radius: 6px;
   padding: 0.15rem 0.35rem;
 }
+/* The voice list comes from the provider, and some providers use long names:
+   ElevenLabs ships names such as "Roger - Laid-Back, Casual, Resonant". A
+   dropdown is as wide as its widest entry, so without a cap one provider's
+   naming style would stretch the whole toolbar. */
+#sel-voice { max-width: 11rem; }
 button {
   font: inherit; cursor: pointer;
   background: var(--bg); color: var(--text);

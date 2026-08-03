@@ -69,6 +69,12 @@ make install            # Installs to ~/.claude/plugins/claude-code-tts/
 │      - POST {KOKORO_BASE_URL}/v1/audio/speech, no auth      │
 │      - OpenAI-compatible body; response_format=mp3          │
 │      - Voice validation is pass-through (server decides)    │
+│      - Discovers the server's real voices via GET           │
+│        /v1/audio/voices (lazy, cached, both the string and  │
+│        the {id,name} response shapes). A failed attempt is  │
+│        retried after 30s, because Kokoro often starts after │
+│        this process. Falls back to kokoroKnownVoices, a     │
+│        10-name sample, when the server is unreachable       │
 │      - All clients return MP3 audio bytes                   │
 │                                                             │
 │  internal/audio/                                            │
@@ -139,6 +145,15 @@ make install            # Installs to ~/.claude/plugins/claude-code-tts/
 │        pages title themselves "project — session title".    │
 │        A URL with no session id serves the navigator        │
 │        (every project + session, via /api/sessions)         │
+│      - The voice picker is a <select> listing every voice   │
+│        the provider reports, plus a "Custom…" entry that    │
+│        reveals a text box. It must not be an <input list=   │
+│        …> with a datalist: a browser filters datalist       │
+│        suggestions to those matching the text already in    │
+│        the box, so a pre-filled box only ever offered the   │
+│        voice already chosen. The text box stays because     │
+│        some voices cannot be enumerated (ElevenLabs raw     │
+│        voice IDs, Kokoro blends like af_bella(2)+af_sky(1)) │
 │      - The BROWSER plays the audio here (not player.go) so  │
 │        the page can highlight each sentence/word in sync;   │
 │        sentence timing is exact (one clip per sentence),    │

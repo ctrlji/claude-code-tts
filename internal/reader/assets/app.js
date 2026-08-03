@@ -54,6 +54,10 @@ function applyMeta(data) {
 const SPEEDS = [0.5, 0.75, 0.9, 1.0, 1.1, 1.25, 1.5, 1.75, 2.0];
 const MAX_SENTENCE_CHARS = 300; // one TTS request per sentence; keep them small
 const CACHE_MAX_CLIPS = 60;
+// The value of the voice dropdown's last entry, which reveals the free-text box
+// for a voice the provider cannot enumerate. No real voice can collide with it,
+// because every provider names voices without angle brackets.
+const CUSTOM_VOICE = '<custom>';
 
 const state = {
   cfg: null,
@@ -1006,7 +1010,6 @@ function populateControls() {
 
   provSel.value = settings.provider;
   speedSel.value = String(settings.speed);
-  $('#inp-voice').value = settings.voice;
   $('#chk-follow').checked = settings.follow;
   $('#chk-autoread').checked = settings.autoread;
   $('#chk-interim').checked = settings.interim;
@@ -1015,7 +1018,6 @@ function populateControls() {
   provSel.addEventListener('change', () => {
     settings.provider = provSel.value;
     settings.voice = savedVoiceFor(settings.provider) || defaultVoiceFor(settings.provider);
-    $('#inp-voice').value = settings.voice;
     refreshVoiceOptions();
     saveSettings();
   });
@@ -1024,8 +1026,26 @@ function populateControls() {
     if (state.audio) state.audio.playbackRate = settings.speed;
     saveSettings();
   });
+  $('#sel-voice').addEventListener('change', () => {
+    const custom = $('#inp-voice');
+    if ($('#sel-voice').value === CUSTOM_VOICE) {
+      // Reveal the free-text box but do not change the voice yet: the user has
+      // not said what the custom voice is. Committing happens when they type it.
+      custom.hidden = false;
+      custom.focus();
+      return;
+    }
+    settings.voice = $('#sel-voice').value;
+    custom.hidden = true;
+    custom.value = '';
+    saveVoiceFor(settings.provider, settings.voice);
+    saveSettings();
+  });
   $('#inp-voice').addEventListener('change', () => {
     settings.voice = $('#inp-voice').value.trim() || defaultVoiceFor(settings.provider);
+    // A typed name that happens to be one of the listed voices should select it
+    // in the dropdown rather than leave the control claiming to be custom.
+    refreshVoiceOptions();
     saveVoiceFor(settings.provider, settings.voice);
     saveSettings();
   });
@@ -1048,16 +1068,34 @@ function defaultVoiceFor(provider) {
   return pc ? pc.default_voice : '';
 }
 
+// refreshVoiceOptions fills the voice dropdown for the selected provider and
+// puts the control into the right one of its two states. A dropdown is used
+// rather than a text box with autocomplete because a browser filters the
+// autocomplete suggestions down to the ones matching whatever is already typed,
+// which meant the box only ever offered the voice that was already selected.
+// The free-text box stays available behind the "Custom…" entry, because some
+// voices cannot be listed: ElevenLabs accepts raw voice IDs, and Kokoro accepts
+// weighted blends such as "af_bella(2)+af_sky(1)".
 function refreshVoiceOptions() {
-  const list = $('#voice-options');
-  list.textContent = '';
+  const sel = $('#sel-voice');
+  const custom = $('#inp-voice');
+  sel.textContent = '';
   const pc = state.cfg.providers[settings.provider];
   if (!pc) return;
+
   for (const v of pc.voices) {
-    const o = document.createElement('option');
+    const o = el('option', '', v);
     o.value = v;
-    list.append(o);
+    sel.append(o);
   }
+  const other = el('option', '', 'Custom…');
+  other.value = CUSTOM_VOICE;
+  sel.append(other);
+
+  const listed = pc.voices.includes(settings.voice);
+  sel.value = listed ? settings.voice : CUSTOM_VOICE;
+  custom.hidden = listed;
+  custom.value = listed ? '' : settings.voice;
 }
 
 /* ---------------- selection chip + context menu ---------------- */

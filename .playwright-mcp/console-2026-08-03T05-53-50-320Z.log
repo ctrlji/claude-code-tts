@@ -1,0 +1,1 @@
+[  105431ms] [ERROR] Loading media from  'data:audio/wav;base64,UklGRigAAABXQVZFZm10IBAAAAABAAEAQB8AAEAfAAABAAgAZGF0YQQAAACAgICA' violates the following Content Security Policy directive: "media-src 'self' blob:". The action has been blocked. @ http://localhost:8898/?s=414ea5fe-fc5b-4330-afe5-a9e0a47db70b:0
